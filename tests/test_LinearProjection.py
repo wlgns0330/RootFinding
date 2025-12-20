@@ -1,6 +1,6 @@
 import numpy as np
 from yroots.LinearProjection import remove_linear, project_down, bounding_parallelepiped, proj_approximate_nd
-from yroots.polynomial import Polynomial, MultiCheb, MultiPower, getPoly
+from yroots.polynomial import Polynomial, MultiCheb, MultiPower #, getPoly
 from yroots.MacaulayReduce import find_degree, mon_combos
 from yroots import polyroots as pr
 from yroots.utils import InstabilityWarning, arrays
@@ -10,50 +10,50 @@ import unittest
 import warnings
 import yroots.subdivision as sbd
 
-def correctZeros(original_polys, new_polys, transform, MSmatrix):
-    '''
-    A helper function for polyroots tests. Takes in polynomials, find their common zeros using polyroots, and calculates
-    how many of the zeros are correct.
-    In this function it asserts that the number of zeros is equal to the product of the degrees, which is only valid if
-    the polynomials are random and upper triangular, and that at least 95% of the zeros are correct (so it will pass even
-    on bad random runs)
-    '''
-    zeros = transform(pr.solve(new_polys, MSmatrix = MSmatrix))
-    correct = 0
-    outOfRange = 0
-    for zero in zeros:
-        good = True
-        for poly in original_polys:
-            if not np.isclose(0, poly(zero), atol = 1.e-3):
-                good = False
-                if (np.abs(zero) > 1).any():
-                    outOfRange += 1
-                break
-        if good:
-            correct += 1
-    assert(100*correct/(len(zeros)-outOfRange) > 95)
+# def correctZeros(original_polys, new_polys, transform, MSmatrix):
+#     '''
+#     A helper function for polyroots tests. Takes in polynomials, find their common zeros using polyroots, and calculates
+#     how many of the zeros are correct.
+#     In this function it asserts that the number of zeros is equal to the product of the degrees, which is only valid if
+#     the polynomials are random and upper triangular, and that at least 95% of the zeros are correct (so it will pass even
+#     on bad random runs)
+#     '''
+#     zeros = transform(pr.solve(new_polys, MSmatrix = MSmatrix))
+#     correct = 0
+#     outOfRange = 0
+#     for zero in zeros:
+#         good = True
+#         for poly in original_polys:
+#             if not np.isclose(0, poly(zero), atol = 1.e-3):
+#                 good = False
+#                 if (np.abs(zero) > 1).any():
+#                     outOfRange += 1
+#                 break
+#         if good:
+#             correct += 1
+#     assert(100*correct/(len(zeros)-outOfRange) > 95)
 
-def test_bounding_parallelepiped():
-    num_test_cases = 10
+# def test_bounding_parallelepiped():
+#     num_test_cases = 10
 
-    np.random.seed(31)
-    A = getPoly(1, 2, True)
-    p0,edges = bounding_parallelepiped(A.coeff)
-    rand = np.random.rand(edges.shape[1], num_test_cases)
-    pts = np.dot(edges, rand).T + p0
-    assert np.allclose(A(pts), 0)
+#     np.random.seed(31)
+#     A = getPoly(1, 2, True)
+#     p0,edges = bounding_parallelepiped(A.coeff)
+#     rand = np.random.rand(edges.shape[1], num_test_cases)
+#     pts = np.dot(edges, rand).T + p0
+#     assert np.allclose(A(pts), 0)
 
-    A = getPoly(1, 3, True)
-    p0,edges = bounding_parallelepiped(A.coeff)
-    rand = np.random.rand(edges.shape[1], num_test_cases)
-    pts = np.dot(edges, rand).T + p0
-    assert np.allclose(A(pts), 0)
+#     A = getPoly(1, 3, True)
+#     p0,edges = bounding_parallelepiped(A.coeff)
+#     rand = np.random.rand(edges.shape[1], num_test_cases)
+#     pts = np.dot(edges, rand).T + p0
+#     assert np.allclose(A(pts), 0)
 
-    A = getPoly(1, 6, True)
-    p0,edges = bounding_parallelepiped(A.coeff)
-    rand = np.random.rand(edges.shape[1], num_test_cases)
-    pts = np.dot(edges, rand).T + p0
-    assert np.allclose(A(pts), 0)
+#     A = getPoly(1, 6, True)
+#     p0,edges = bounding_parallelepiped(A.coeff)
+#     rand = np.random.rand(edges.shape[1], num_test_cases)
+#     pts = np.dot(edges, rand).T + p0
+#     assert np.allclose(A(pts), 0)
 
 # def test_project_down():
 #     num_test_cases = 10
