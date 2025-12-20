@@ -1,7 +1,7 @@
 import numpy as np
 import itertools
 from yroots import OneDimension as oneD
-from yroots.polynomial import MultiCheb, MultiPower, is_power
+from yroots.polynomial import MultiCheb, MultiPower #, is_power
 from yroots.Multiplication import multiplication
 from yroots.utils import Term, get_var_list, divides, MacaulayError, \
                             InstabilityWarning, match_size, match_poly_dimensions, \
