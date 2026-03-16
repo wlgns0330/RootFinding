@@ -114,14 +114,23 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     # Get an approximation for each function.
     if verbose:
         print("Approximation shapes:", end=" ")
+
+    if not unit_box:
+        alphas = (b - a) / 2
+        betas = (b + a) / 2
+
     for i in range(dim):
         # t = time()
-        if unit_box and isinstance(funcs[i], MultiPower):
+        if isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
             errs[i] = macheps
-        elif unit_box and isinstance(funcs[i], MultiCheb):
+            if not unit_box:
+                polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
+        elif isinstance(funcs[i], MultiCheb):
             polys[i] = funcs[i].coeff
             errs[i] = macheps
+            if not unit_box:
+                polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         else:
             polys[i], errs[i] = ChebyshevApproximator.chebApproximate(funcs[i],a,b)
         # return time() - t
@@ -129,7 +138,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             print(f"{i}: {polys[i].shape}", end = " " if i != dim-1 else '\n')
     if verbose:
         print(f"Searching on interval {[[a[i],b[i]] for i in range(dim)]}")
-        
+
     #Solve the Chebyshev polynomial system
     yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
                 constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False)
