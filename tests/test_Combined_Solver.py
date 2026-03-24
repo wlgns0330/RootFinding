@@ -3,6 +3,12 @@ import yroots as yr
 import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import pytest
 from pathlib import Path
+import inspect
+
+# Check where yr.solve is running from
+print(f"\nyroots module file: {yr.__file__}")
+print(f"yroots origin: {yr.__spec__.origin}")
+print(f"yr.solve file: {inspect.getfile(yr.solve)}")
 
 # These are tests from Combined
 
@@ -77,7 +83,7 @@ def test_high_dim():
     a = [0]*5
     b = [2*np.pi]*5
 
-    roots = yr.solve([f1,f2,f3,f4,f5],a,b,verbose=True)
+    roots = yr.solve([f1,f2,f3,f4,f5],a,b)
 
     assert len(roots) == 1
     assert np.max([np.abs(f(*[roots[:,i] for i in range(5)])) for f in [f1,f2,f3,f4,f5]]) < tol2
@@ -147,13 +153,9 @@ def test_multiPower():
     assert np.max(np.abs(g(roots))) < tol2
 
 def test_multiCheb():
-    """
-    f(x,y) = 5x^3 + 4 xy^2 + 3x^2 + 2y^2 - 5
-    g(x,y) = 5 T_2(x) + 3T_1(x)T_2(y) + 2
 
-    """
     coeff = np.zeros((3, 3, 3))
-    coeff[1, 0, 0], coeff[0, 1, 2], coeff[2, 1] = -1, 2, 4
+    coeff[1, 0, 0], coeff[0, 1, 2], coeff[2, 1, 0] = -1, 2, 4
     f = yr.MultiCheb(coeff)
 
     coeff = np.zeros((3, 3, 3))
@@ -194,6 +196,7 @@ def test_no_roots():
     g = yr.MultiPower(coeff)
 
     roots = yr.solve([f,g],[-1,-1],[1,1])
+    assert len(roots) == 0
 
 def test_bad_intervals():
     """
@@ -244,17 +247,17 @@ def test_exact_option():
     assert len(yroots_exact) == len(actual_roots)
     assert len(yroots_exact) == len(chebfun_roots)
 
-    actual_roots = np.sort(actual_roots)
-    yroots_non_exact = np.sort(yroots_non_exact)
-    yroots_exact = np.sort(yroots_exact) 
-    chebfun_roots = np.sort(chebfun_roots) #sort the Roots
+    # actual_roots = np.sort(actual_roots)
+    # yroots_non_exact = np.sort(yroots_non_exact)
+    # yroots_exact = np.sort(yroots_exact) 
+    # chebfun_roots = np.sort(chebfun_roots) #sort the Roots
 
     assert_same_points(yroots_exact, actual_roots)
     assert_same_points(yroots_exact, chebfun_roots)
     assert_same_points(yroots_non_exact, actual_roots)
     assert_same_points(yroots_non_exact, chebfun_roots)
 
-def testreturnBoundingBoxes():
+def test_return_Bounding_Boxes():
     """
     Solve has an option to return the bounding boxes on the roots. 
     This test makes sure each root lies within their respective box.
@@ -263,13 +266,16 @@ def testreturnBoundingBoxes():
     g = lambda x,y: np.cos(2*(x-2*y+ np.pi/7))
     a,b = np.array([-1,-1]),np.array([1,1])
 
-    yroots, boxes = yr.solve([f, g], a, b, returnBoundingBoxes=True)
+    roots, boxes = yr.solve([f, g], a, b, returnBoundingBoxes=True)
 
-    for root, box in zip(yroots,boxes):
+    for root, box in zip(roots,boxes):
         box = ChebyshevSubdivisionSolver.TrackedInterval(box)
         assert box.__contains__(root) == True
 
-def testoutside_neg1_pos1():
+    assert np.max(np.abs(f(roots[:,0], roots[:,1]))) < tol2
+    assert np.max(np.abs(g(roots[:,0], roots[:,1]))) < tol2
+
+def test_outside_neg1_pos1():
     """
     Let the search interval be larger than [-1,1]^n.
     Assert that each root is in its respective box.
@@ -279,7 +285,10 @@ def testoutside_neg1_pos1():
     a,b = np.array([-2,-2]), np.array([2,2])
     funcs = [f,g]
     
-    yroots, boxes = yr.solve(funcs, a, b, returnBoundingBoxes=True)
-    for root, box in zip(yroots,boxes):
+    roots, boxes = yr.solve(funcs, a, b, returnBoundingBoxes=True)
+    for root, box in zip(roots,boxes):
         box = ChebyshevSubdivisionSolver.TrackedInterval(box)
         assert box.__contains__(root) == True
+
+    assert np.max(np.abs(f(roots[:,0], roots[:,1]))) < tol2
+    assert np.max(np.abs(g(roots[:,0], roots[:,1]))) < tol2
