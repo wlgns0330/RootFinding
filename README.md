@@ -54,7 +54,12 @@ b = np.array([0,1]) #upper bounds on x and y
 yr.solve([f,g],a,b)
 ```
 
-If the system includes polynomials, there are specialized `Polynomial` objects which may be allow for faster solving. See [YRoots Tutorial](https://github.com/tylerjarvis/RootFinding/blob/main/YRootsTutorial.ipynb) and [YRoots Demo](https://github.com/tylerjarvis/RootFinding/blob/main/YRootsDemo.ipynb) for more details.
+If the system includes polynomials, there are specialized `Polynomial` objects which may be allow for faster solving. See [Combined Notebook](https://github.com/tylerjarvis/RootFinding/blob/main/CombinedNotebook.ipynb) for more details.
+
+
+## Examples of Applications
+Below is a list of Jupyter notebooks in which YRoots has been used to solve real-world problems:
+- [Solving Equilibrium Points of First Order ODE Systems] (https://github.com/tylerjarvis/RootFinding/blob/main/Applications/Equilibrium Points.ipynb)
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
