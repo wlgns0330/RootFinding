@@ -9,6 +9,9 @@ from time import time
 import copy
 import warnings
 
+# Edit number 1
+from multiprocessing import Pool
+
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
 
@@ -38,6 +41,11 @@ class SolverOptions():
         self.all_dim_quadratic_check = False
         self.maxZoomCount = 25
         self.level = 0
+
+        # Edit number 2
+        # Parameters for parallelization
+        self.max_cpu = 1
+        self.allowParallel = True
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
@@ -1174,6 +1182,25 @@ def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
+# Edit number 3
+# Runs the top level of subdivision in parallel
+# Turns off parallel for next level of subdivision
+def _run_children(allMs, allErrors, allIntervals, solverOptions):
+    if not allIntervals:
+        return []
+
+    tasks = []
+    childSolverOptions = solverOptions.copy()
+    childSolverOptions.allowParallel = False
+
+    for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
+        tasks.append((newMs, newInt, newErrs, childSolverOptions))
+
+    nproc = max(1, min(len(allIntervals), solverOptions.max_cpu))
+
+    with Pool(processes=nproc) as pool:
+        return pool.starmap(solvePolyRecursive, tasks)
+
 def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     """Recursively shrinks and subdivides the given interval to find the locations of all roots.
 
@@ -1266,10 +1293,20 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     elif trackedInterval.finalStep:
         trackedInterval.canThrowOutFinalStep = True
         allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
+
+        # Edit number 5
         resultsAll = []
-        for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-            newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
-            resultsAll += newInterior + newExterior
+        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
+            child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
+            for newInterior, newExterior in child_results:
+                resultInterior += newInterior
+                resultExterior += newExterior
+        else:
+            for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
+                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
+                resultInterior += newInterior
+                resultExterior += newExterior
+
         if len(resultsAll) == 0:
             #Can't throw out final step! This might not actually be a root though!
             trackedInterval.possibleExtraRoot = True
@@ -1311,10 +1348,21 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
         #Get the new intervals and polynomials
         allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
         #Run each interval
-        for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-            newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
-            resultInterior += newInterior
-            resultExterior += newExterior
+
+        # Edit number 4
+        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
+            child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
+            for newInterior, newExterior in child_results:
+                resultInterior += newInterior
+                resultExterior += newExterior
+        else:
+            for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
+                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
+                resultInterior += newInterior
+                resultExterior += newExterior
+
+
+
         #Rerun the touching intervals
         idx1 = 0
         idx2 = 1
@@ -1384,7 +1432,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultInterior.append(tempInterval)
         return resultInterior, newResultExterior
 
-def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False):
+def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False, max_cpu=1):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1428,6 +1476,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     solverOptions.low_dim_quadratic_check = low_dim_quadratic_check
     solverOptions.all_dim_quadratic_check = all_dim_quadratic_check
     solverOptions.useFinalStep = True
+    solverOptions.max_cpu=max_cpu
 
     if verbose:
         print("Finding roots...", end=' ')
