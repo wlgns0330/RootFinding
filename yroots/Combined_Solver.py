@@ -77,6 +77,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         times. Should give more accurate roots when smaller. This number is absolute when the boudning interval in
         question is in [-1,1], and relative otherwise. So if an interval has an endpoint of magnitude > 1, then
         minBoundingIntervalSize is multipled by that value for that dimension.
+    max_cpu : int
+        Defaults to 1. Max number of allowed cpus when solving subdivided regions.
 
     Returns
     -------

@@ -292,3 +292,29 @@ def test_outside_neg1_pos1():
 
     assert np.max(np.abs(f(roots[:,0], roots[:,1]))) < tol2
     assert np.max(np.abs(g(roots[:,0], roots[:,1]))) < tol2
+
+def test_parallelization():
+    coeff = np.zeros((3, 3, 3))
+    coeff[1, 0, 0], coeff[0, 1, 2], coeff[2, 1, 0] = -1, 2, 4
+    f = yr.MultiCheb(coeff)
+
+    coeff = np.zeros((3, 3, 3))
+    coeff[0, 2,0], coeff[1,2, 0], coeff[1, 1, 1] = 5, 3, 2
+    g = yr.MultiCheb(coeff)
+
+    coeff = np.zeros((3, 3, 3))
+    coeff[0, 0, 1], coeff[1,0, 0], coeff[2, 1, 0] = 2, -1, 3
+    h = yr.MultiCheb(coeff)
+
+    roots = yr.solve([f, g, h],[-1, -1, -1],[1, 1, 1])
+    roots2 = yr.solve([f, g, h],[-1, -1, -1],[1, 1, 1], max_cpu=5)
+
+    assert len(roots) > 0
+    assert len(roots) == len(roots2)
+    assert np.max(np.abs(f(roots))) < tol2
+    assert np.max(np.abs(g(roots))) < tol2
+    assert np.max(np.abs(h(roots))) < tol2
+
+    assert np.isclose(np.max(np.abs(f(roots))), np.max(np.abs(f(roots2))))
+    assert np.isclose(np.max(np.abs(g(roots))), np.max(np.abs(g(roots2))))
+    assert np.isclose(np.max(np.abs(h(roots))), np.max(np.abs(h(roots2))))
