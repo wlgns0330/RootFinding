@@ -1301,13 +1301,13 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
             for newInterior, newExterior in child_results:
                 resultInterior += newInterior
                 resultExterior += newExterior
+                resultsAll += newInterior + newExterior
         else:
             for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
                 newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
                 resultInterior += newInterior
                 resultExterior += newExterior
-
-        resultsAll += newInterior + newExterior
+                resultsAll += newInterior + newExterior
 
         if len(resultsAll) == 0:
             #Can't throw out final step! This might not actually be a root though!
