@@ -1307,6 +1307,8 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultInterior += newInterior
                 resultExterior += newExterior
 
+        resultsAll += newInterior + newExterior
+
         if len(resultsAll) == 0:
             #Can't throw out final step! This might not actually be a root though!
             trackedInterval.possibleExtraRoot = True
