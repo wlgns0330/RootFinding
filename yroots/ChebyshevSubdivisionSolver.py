@@ -10,7 +10,42 @@ import copy
 import warnings
 
 # Edit number 1
+from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from multiprocessing import Pool
+
+# Edit Edit
+@dataclass
+class SolveTask:
+    Ms: object
+    trackedInterval: object
+    errors: object
+    parent_id: int | None = None
+@dataclass
+class SubdivisionState:
+    """
+    Stores the information needed to finish a parent interval
+    after all of its children have completed.
+    """
+    originalMs: object
+    originalInterval: object
+    trackedInterval: object
+    errors: object
+    solverOptions: object
+    isFinalStep: bool
+@dataclass
+class TaskResult:
+    """
+    If childTasks is empty, this task is finished.
+
+    If childTasks is nonempty, this task subdivided and needs the
+    driver to solve children before finishing the parent.
+    """
+    interior: list
+    exterior: list
+    childTasks: list
+    subdivisionState: SubdivisionState | None = None
+# End Edit
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -1182,257 +1217,647 @@ def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
-# Edit number 3
-# Runs the top level of subdivision in parallel
-# Turns off parallel for next level of subdivision
-def _run_children(allMs, allErrors, allIntervals, solverOptions):
-    if not allIntervals:
-        return []
+# Edit Edit
+def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None):
+    return [
+        SolveTask(newMs, newInt, newErrs, parent_id=parent_id)
+        for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals)
+    ]
 
-    tasks = []
-    childSolverOptions = solverOptions.copy()
-    childSolverOptions.allowParallel = False
-
-    for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-        tasks.append((newMs, newInt, newErrs, childSolverOptions))
-
-    nproc = max(1, min(len(allIntervals), solverOptions.max_cpu))
-
-    with Pool(processes=nproc) as pool:
-        return pool.starmap(solvePolyRecursive, tasks)
-
-def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
-    """Recursively shrinks and subdivides the given interval to find the locations of all roots.
-
-    Parameters
-    ----------
-    Ms : list of numpy arrays
-        The chebyshev approximations of the functions
-    trackedInterval : TrackedInterval
-        The information about the interval we are solving on.
-    errors : numpy array
-        An upper bound for the error of the Chebyshev approximation of the function on the interval
-    solverOptions : SolverOptions
-        Desired settings for running interval checks, transformations, and subdivision.
-
-    Returns
-    -------
-    boundingBoxesInterior : list of numpy arrays (optional)
-        Each element of the list is an interval in which there may be a root. The interval is on the interior of the current
-        interval
-    boundingBoxesExterior : list of numpy arrays (optional)
-        Each element of the list is an interval in which there may be a root. The interval is on the exterior of the current
-        interval
+def solvePolySequential(Ms, trackedInterval, errors, solverOptions):
     """
-    #TODO: Check if trackedInterval.interval has width 0 in some dimension, in which case we should get rid of that dimension.
-    #If the interval is a point, return it
+    Fully sequential solve.
+
+    Use this inside workers when you do not want nested parallelism.
+    """
+    localOptions = solverOptions.copy()
+    localOptions.allowParallel = False
+    return solvePolyRecursive(
+        Ms,
+        trackedInterval,
+        errors,
+        localOptions,
+        returnChildren=False
+    )
+
+def _solve_one_level_worker(task, solverOptions):
+    """
+    Worker for one unit of multilevel work.
+
+    It solves one interval until either:
+      1. it finishes, or
+      2. it reaches subdivision and returns child tasks.
+    """
+    localOptions = solverOptions.copy()
+    localOptions.allowParallel = False
+
+    return solvePolyRecursive(
+        task.Ms,
+        task.trackedInterval,
+        task.errors,
+        localOptions,
+        returnChildren=True
+    )
+
+def finish_subdivision_state(state, childInterior, childExterior):
+    """
+    Finish a parent interval after its children have completed.
+
+    This contains the logic that used to happen immediately after the
+    recursive child calls returned.
+    """
+    originalMs = state.originalMs
+    originalInterval = state.originalInterval
+    trackedInterval = state.trackedInterval
+    errors = state.errors
+    solverOptions = state.solverOptions
+
+    resultInterior = list(childInterior)
+    resultExterior = list(childExterior)
+
+    if state.isFinalStep:
+        resultsAll = resultInterior + resultExterior
+
+        if len(resultsAll) == 0:
+            trackedInterval.possibleExtraRoot = True
+
+            if isExteriorInterval(originalInterval, trackedInterval):
+                return [], [trackedInterval]
+            else:
+                return [trackedInterval], []
+
+        # Combine all roots that converged to the same point.
+        allFoundRoots = set()
+        tempResults = []
+
+        for result in resultsAll:
+            point = tuple(result.interval[:, 0])
+            if point in allFoundRoots:
+                continue
+            allFoundRoots.add(point)
+            tempResults.append(result)
+
+        for result in tempResults:
+            if len(result.possibleDuplicateRoots) > 0:
+                trackedInterval.possibleDuplicateRoots += result.possibleDuplicateRoots
+            else:
+                trackedInterval.possibleDuplicateRoots.append(result.getFinalPoint())
+
+        if isExteriorInterval(originalInterval, trackedInterval):
+            return [], [trackedInterval]
+        else:
+            return [trackedInterval], []
+    
+    idx1 = 0
+    idx2 = 1
+
+    for tempInterval in resultExterior:
+        tempInterval.reRun = False
+
+    while idx1 < len(resultExterior):
+        while idx2 < len(resultExterior):
+            if resultExterior[idx1].overlapsWith(resultExterior[idx2]):
+                combinedInterval = originalInterval.copy()
+
+                if combinedInterval.finalStep:
+                    combinedInterval.interval = combinedInterval.preFinalInterval.copy()
+                    combinedInterval.transforms = combinedInterval.preFinalTransforms.copy()
+
+                newAs = np.min(
+                    [
+                        resultExterior[idx1].getIntervalForCombining()[:, 0],
+                        resultExterior[idx2].getIntervalForCombining()[:, 0]
+                    ],
+                    axis=0
+                )
+
+                newBs = np.max(
+                    [
+                        resultExterior[idx1].getIntervalForCombining()[:, 1],
+                        resultExterior[idx2].getIntervalForCombining()[:, 1]
+                    ],
+                    axis=0
+                )
+
+                final1 = resultExterior[idx1].getFinalInterval()
+                final2 = resultExterior[idx2].getFinalInterval()
+
+                newAsFinal = np.min([final1[:, 0], final2[:, 0]], axis=0)
+                newBsFinal = np.max([final1[:, 1], final2[:, 1]], axis=0)
+
+                oldAs = originalInterval.interval[:, 0]
+                oldBs = originalInterval.interval[:, 1]
+                oldAsFinal, oldBsFinal = originalInterval.getFinalInterval().T
+
+                equalMask = oldBsFinal == oldAsFinal
+                oldBsFinal[equalMask] = oldBsFinal[equalMask] + 1
+
+                currSubinterval = (
+                    (
+                        2 * np.array([newAsFinal, newBsFinal])
+                        - oldAsFinal
+                        - oldBsFinal
+                    )
+                    / (oldBsFinal - oldAsFinal)
+                ).T
+
+                currSubinterval[equalMask, 0] = -1
+                currSubinterval[equalMask, 1] = 1
+
+                currSubinterval[:, 0][oldAs == newAs] = -1
+                currSubinterval[:, 1][oldBs == newBs] = 1
+
+                combinedInterval.addTransform(currSubinterval)
+                combinedInterval.interval = np.array([newAs, newBs]).T
+                combinedInterval.reRun = True
+
+                del resultExterior[idx2]
+                del resultExterior[idx1]
+
+                resultExterior.append(combinedInterval)
+                idx2 = idx1 + 1
+            else:
+                idx2 += 1
+
+        idx1 += 1
+        idx2 = idx1 + 1
+
+    # Rerun touching intervals.
+    newResultExterior = []
+
+    for tempInterval in resultExterior:
+        if tempInterval.reRun:
+            if np.all(tempInterval.interval == originalInterval.interval):
+                newResultExterior.append(tempInterval)
+            else:
+                tempMs, tempErrors = transformChebToInterval(
+                    originalMs,
+                    *tempInterval.getLastTransform(),
+                    errors,
+                    solverOptions.exact
+                )
+
+                tempResultsInterior, tempResultsExterior = solvePolySequential(
+                    tempMs,
+                    tempInterval,
+                    tempErrors,
+                    solverOptions
+                )
+
+                resultInterior += tempResultsInterior
+                newResultExterior += tempResultsExterior
+
+        elif isExteriorInterval(originalInterval, tempInterval):
+            newResultExterior.append(tempInterval)
+
+        else:
+            resultInterior.append(tempInterval)
+
+    return resultInterior, newResultExterior
+
+
+def solvePolyParallelMultilevel(Ms, trackedInterval, errors, solverOptions):
+    """
+    Multilevel parallel driver.
+
+    This is the only place where a process pool is created.
+    """
+    max_workers = max(1, solverOptions.max_cpu)
+
+    workerOptions = solverOptions.copy()
+    workerOptions.allowParallel = False
+
+    next_parent_id = 0
+
+    pendingTasks = [
+        SolveTask(Ms, trackedInterval, errors, parent_id=None)
+    ]
+
+    futures = set()
+
+    # parent_id -> bookkeeping
+    waitingParents = {}
+
+    finalInterior = []
+    finalExterior = []
+
+    def submit_task(executor, task):
+        return executor.submit(_solve_one_level_worker, task, workerOptions), task.parent_id
+
+    def complete_result(result, parent_id):
+        """
+        Handle a completed TaskResult.
+
+        If parent_id is None, add directly to final result.
+        Otherwise, accumulate into the waiting parent.
+        """
+        nonlocal next_parent_id
+
+        # Case 1: the task finished normally.
+        if len(result.childTasks) == 0:
+            if parent_id is None:
+                finalInterior.extend(result.interior)
+                finalExterior.extend(result.exterior)
+            else:
+                parent = waitingParents[parent_id]
+                parent["interior"].extend(result.interior)
+                parent["exterior"].extend(result.exterior)
+                parent["remaining"] -= 1
+
+            return
+
+        # Case 2: the task subdivided.
+        this_parent_id = next_parent_id
+        next_parent_id += 1
+
+        waitingParents[this_parent_id] = {
+            "state": result.subdivisionState,
+            "parent_id": parent_id,
+            "remaining": len(result.childTasks),
+            "interior": list(result.interior),
+            "exterior": list(result.exterior),
+        }
+
+        for child in result.childTasks:
+            child.parent_id = this_parent_id
+            pendingTasks.append(child)
+
+    def finish_ready_parents():
+        """
+        Some parent may become ready after its final child finishes.
+
+        Finishing a parent produces normal interior/exterior results,
+        which then need to be passed upward to that parent's parent.
+        """
+        changed = True
+
+        while changed:
+            changed = False
+
+            ready_ids = [
+                parent_id
+                for parent_id, parent in waitingParents.items()
+                if parent["remaining"] == 0
+            ]
+
+            for parent_id in ready_ids:
+                parent = waitingParents.pop(parent_id)
+
+                interior, exterior = finish_subdivision_state(
+                    parent["state"],
+                    parent["interior"],
+                    parent["exterior"]
+                )
+
+                parent_result = TaskResult(
+                    interior=interior,
+                    exterior=exterior,
+                    childTasks=[],
+                    subdivisionState=None
+                )
+
+                complete_result(parent_result, parent["parent_id"])
+                changed = True
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_parent = {}
+
+        # Fill pool initially.
+        while pendingTasks and len(futures) < max_workers:
+            task = pendingTasks.pop()
+            fut, parent_id = submit_task(executor, task)
+            futures.add(fut)
+            future_to_parent[fut] = parent_id
+
+        while futures:
+            done, futures = wait(futures, return_when=FIRST_COMPLETED)
+
+            for fut in done:
+                parent_id = future_to_parent.pop(fut)
+                result = fut.result()
+
+                complete_result(result, parent_id)
+                finish_ready_parents()
+
+            # Refill available worker slots.
+            while pendingTasks and len(futures) < max_workers:
+                task = pendingTasks.pop()
+                fut, parent_id = submit_task(executor, task)
+                futures.add(fut)
+                future_to_parent[fut] = parent_id
+
+    # After all futures finish, make sure all parent continuations are finished.
+    finish_ready_parents()
+
+    return finalInterior, finalExterior
+
+
+def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildren=False):
+    """
+    Recursively shrinks and subdivides the given interval to find the locations of all roots.
+
+    When returnChildren=False:
+        behaves like the original sequential recursive function.
+
+    When returnChildren=True:
+        solves until it reaches a subdivision point, then returns a TaskResult
+        containing child tasks instead of recursively solving those children.
+    """
+
     if trackedInterval.isPoint():
+        if returnChildren:
+            return TaskResult([], [trackedInterval], [])
         return [], [trackedInterval]
 
-    #If we ever change the options in this function, we will need to do a copy here.
-    #Should be cheap, but as we never change them for now just avoid the copy
     solverOptions = solverOptions.copy()
     solverOptions.level += 1
 
-    #Constant term check, runs at the beginning of the solve and before each subdivision
-    #If the absolute value of the constant term for any of the chebyshev polynomials is greater than the sum of the
-    #absoulte values of any of the other terms, it will return that there are no zeros on that interval
+    # Constant term check.
     if solverOptions.constant_check:
         consts = np.array([M.ravel()[0] for M in Ms])
-        err = np.array([np.sum(np.abs(M))-abs(c)+e for M,e,c in zip(Ms,errors,consts)])
+        err = np.array([
+            np.sum(np.abs(M)) - abs(c) + e
+            for M, e, c in zip(Ms, errors, consts)
+        ])
+
         if np.any(np.abs(consts) > err):
+            if returnChildren:
+                return TaskResult([], [], [])
             return [], []
 
-    #Runs quadratic check after constant check, only for dimensions 2 and 3 by default
-    #More expensive than constant term check, but testing show it saves time in lower dimensions
-    if (solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3) or solverOptions.all_dim_quadratic_check:
+    # Quadratic check.
+    if (
+        solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3
+    ) or solverOptions.all_dim_quadratic_check:
         for i in range(len(Ms)):
             if quadratic_check(Ms[i], errors[i]):
+                if returnChildren:
+                    return TaskResult([], [], [])
                 return [], []
 
-    #Trim
+    # Trim.
     Ms = Ms.copy()
     originalMs = Ms.copy()
     trackedInterval = trackedInterval.copy()
     errors = errors.copy()
+
     tolerable_error = max(errors) * 1e-3
     trimMs(Ms, errors)
 
-    #Solve
     dim = Ms[0].ndim
     changed = True
     zoomCount = 0
+
     originalInterval = trackedInterval.copy()
     originalIntervalSize = trackedInterval.size()
-    #Zoom in while we can
+
     lastSizes = trackedInterval.dimSize()
+
     start_time = time()
+
     while changed and zoomCount <= solverOptions.maxZoomCount:
-        #Zoom in until we stop changing or we hit machine epsilon
-        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(Ms, errors, trackedInterval, solverOptions.exact)
-        if trackedInterval.empty: #Throw out the interval
+        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(
+            Ms,
+            errors,
+            trackedInterval,
+            solverOptions.exact
+        )
+
+        if trackedInterval.empty:
+            if returnChildren:
+                return TaskResult([], [], [])
             return [], []
-        #Only count in towards the max is we don't cut the interval in half
+
         newSizes = trackedInterval.dimSize()
-        if np.all(newSizes >= lastSizes / 2): #Check all dims and use >= to account for a dimension being 0.
+
+        if np.all(newSizes >= lastSizes / 2):
             zoomCount += 1
+
         lastSizes = newSizes
+
     finish_time = time()
+
     if should_stop:
-        #Start the final step if the is in the options and we aren't already in it.
         if trackedInterval.finalStep or not solverOptions.useFinalStep:
             if solverOptions.verbose:
-                print("*",end="")
+                print("*", end="")
+
             if isExteriorInterval(originalInterval, trackedInterval):
+                if returnChildren:
+                    return TaskResult([], [trackedInterval], [])
                 return [], [trackedInterval]
             else:
+                if returnChildren:
+                    return TaskResult([trackedInterval], [], [])
                 return [trackedInterval], []
+
         else:
             trackedInterval.startFinalStep()
-            return solvePolyRecursive(Ms, trackedInterval, errors, solverOptions)
+
+            if returnChildren:
+                # Continue solving this same interval in the global scheduler.
+                child = SolveTask(Ms, trackedInterval, errors)
+                state = SubdivisionState(
+                    originalMs=originalMs,
+                    originalInterval=originalInterval,
+                    trackedInterval=trackedInterval,
+                    errors=errors,
+                    solverOptions=solverOptions,
+                    isFinalStep=False
+                )
+
+                return TaskResult(
+                    interior=[],
+                    exterior=[],
+                    childTasks=[child],
+                    subdivisionState=state
+                )
+
+            return solvePolyRecursive(
+                Ms,
+                trackedInterval,
+                errors,
+                solverOptions,
+                returnChildren=False
+            )
+
     elif trackedInterval.finalStep:
         trackedInterval.canThrowOutFinalStep = True
-        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
 
-        # Edit number 5
+        resultInterior, resultExterior = [], []
+
+        allMs, allErrors, allIntervals = getSubdivisionIntervals(
+            Ms,
+            errors,
+            trackedInterval,
+            solverOptions.exact,
+            solverOptions.level
+        )
+
+        childTasks = make_child_tasks(allMs, allErrors, allIntervals)
+
+        if returnChildren:
+            state = SubdivisionState(
+                originalMs=originalMs,
+                originalInterval=originalInterval,
+                trackedInterval=trackedInterval,
+                errors=errors,
+                solverOptions=solverOptions,
+                isFinalStep=True
+            )
+
+            return TaskResult(
+                interior=resultInterior,
+                exterior=resultExterior,
+                childTasks=childTasks,
+                subdivisionState=state
+            )
+
+        # Sequential fallback.
         resultsAll = []
-        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
-            child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
-            for newInterior, newExterior in child_results:
-                resultInterior += newInterior
-                resultExterior += newExterior
-                resultsAll += newInterior + newExterior
-        else:
-            for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
-                resultInterior += newInterior
-                resultExterior += newExterior
-                resultsAll += newInterior + newExterior
+
+        for child in childTasks:
+            newInterior, newExterior = solvePolyRecursive(
+                child.Ms,
+                child.trackedInterval,
+                child.errors,
+                solverOptions,
+                returnChildren=False
+            )
+
+            resultInterior += newInterior
+            resultExterior += newExterior
+
+            resultsAll += newInterior
+            resultsAll += newExterior
 
         if len(resultsAll) == 0:
-            #Can't throw out final step! This might not actually be a root though!
             trackedInterval.possibleExtraRoot = True
+
             if isExteriorInterval(originalInterval, trackedInterval):
                 return [], [trackedInterval]
             else:
                 return [trackedInterval], []
+
         else:
-            #Combine all roots that converged to the same point.
             allFoundRoots = set()
             tempResults = []
+
             for result in resultsAll:
-                point = tuple(result.interval[:,0])
+                point = tuple(result.interval[:, 0])
+
                 if point in allFoundRoots:
                     continue
+
                 allFoundRoots.add(point)
                 tempResults.append(result)
+
             for result in tempResults:
                 if len(result.possibleDuplicateRoots) > 0:
                     trackedInterval.possibleDuplicateRoots += result.possibleDuplicateRoots
                 else:
                     trackedInterval.possibleDuplicateRoots.append(result.getFinalPoint())
+
             if isExteriorInterval(originalInterval, trackedInterval):
                 return [], [trackedInterval]
             else:
                 return [trackedInterval], []
-            #TODO: Don't subdivide in the final step in dimensions that are already points!
+
     else:
-        #Otherwise, Subdivide
+        # Normal subdivision.
         if solverOptions.level == 15:
-            warnings.warn(f"High subdivision depth!\nSubdivision on the search interval has now reached" +
-                          " at least depth 15. Runtime may be prolonged.")
+            warnings.warn(
+                "High subdivision depth!\n"
+                "Subdivision on the search interval has now reached "
+                "at least depth 15. Runtime may be prolonged."
+            )
+
         elif solverOptions.level == 25:
-            warnings.warn(f"Extreme subdivision depth!\nSubdivision on the search interval has now reached" +
-                          " at least depth 25, which is unusual. The solver may not finish running." +
-                          "Ensure the input functions meet the requirements of being continuous, smooth," +
-                          "and having only finitely many simple roots on the search interval.")
+            warnings.warn(
+                "Extreme subdivision depth!\n"
+                "Subdivision on the search interval has now reached "
+                "at least depth 25, which is unusual. The solver may not finish running. "
+                "Ensure the input functions meet the requirements of being continuous, "
+                "smooth, and having only finitely many simple roots on the search interval."
+            )
+
         resultInterior, resultExterior = [], []
-        #Get the new intervals and polynomials
-        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
-        #Run each interval
 
-        # Edit number 4
-        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
-            child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
-            for newInterior, newExterior in child_results:
-                resultInterior += newInterior
-                resultExterior += newExterior
-        else:
-            for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
-                resultInterior += newInterior
-                resultExterior += newExterior
+        allMs, allErrors, allIntervals = getSubdivisionIntervals(
+            Ms,
+            errors,
+            trackedInterval,
+            solverOptions.exact,
+            solverOptions.level
+        )
+
+        childTasks = make_child_tasks(allMs, allErrors, allIntervals)
+
+        if returnChildren:
+            state = SubdivisionState(
+                originalMs=originalMs,
+                originalInterval=originalInterval,
+                trackedInterval=trackedInterval,
+                errors=errors,
+                solverOptions=solverOptions,
+                isFinalStep=False
+            )
+
+            return TaskResult(
+                interior=resultInterior,
+                exterior=resultExterior,
+                childTasks=childTasks,
+                subdivisionState=state
+            )
+
+        # Sequential fallback.
+        for child in childTasks:
+            newInterior, newExterior = solvePolyRecursive(
+                child.Ms,
+                child.trackedInterval,
+                child.errors,
+                solverOptions,
+                returnChildren=False
+            )
+
+            resultInterior += newInterior
+            resultExterior += newExterior
+
+        return finish_subdivision_state(
+            SubdivisionState(
+                originalMs=originalMs,
+                originalInterval=originalInterval,
+                trackedInterval=trackedInterval,
+                errors=errors,
+                solverOptions=solverOptions,
+                isFinalStep=False
+            ),
+            resultInterior,
+            resultExterior
+        )
 
 
+def solvePoly(Ms, trackedInterval, errors, solverOptions):
+    """
+    Recommended public entry point.
 
-        #Rerun the touching intervals
-        idx1 = 0
-        idx2 = 1
-        #Combine any touching intervals and throw them at the end. Flip a bool saying rerun them
-        #If changing this code, test it by defaulting the nextTransformationsInterals to 0, so roots lie on the boundary more.
-        #TODO: Make the combining intervals it's own function!!!
-        for tempInterval in resultExterior:
-            tempInterval.reRun = False
-        while idx1 < len(resultExterior):
-            while idx2 < len(resultExterior):
-                if resultExterior[idx1].overlapsWith(resultExterior[idx2]):
-                    #Combine, throw at the back. Set reRun to true.
-                    combinedInterval = originalInterval.copy()
-                    if combinedInterval.finalStep:
-                        combinedInterval.interval = combinedInterval.preFinalInterval.copy()
-                        combinedInterval.transforms = combinedInterval.preFinalTransforms.copy()
-                    newAs = np.min([resultExterior[idx1].getIntervalForCombining()[:,0], resultExterior[idx2].getIntervalForCombining()[:,0]], axis=0)
-                    newBs = np.max([resultExterior[idx1].getIntervalForCombining()[:,1], resultExterior[idx2].getIntervalForCombining()[:,1]], axis=0)
-                    final1 = resultExterior[idx1].getFinalInterval()
-                    final2 = resultExterior[idx2].getFinalInterval()
-                    newAsFinal = np.min([final1[:,0], final2[:,0]], axis=0)
-                    newBsFinal = np.max([final1[:,1], final2[:,1]], axis=0)
-                    oldAs = originalInterval.interval[:,0]
-                    oldBs = originalInterval.interval[:,1]
-                    oldAsFinal, oldBsFinal = originalInterval.getFinalInterval().T
-                    #Find the final A and B values exactly. Then do the currSubinterval calculation exactly.
-                    #Look at what was done on the example that's failing and see why.
-                    equalMask = oldBsFinal == oldAsFinal
-                    oldBsFinal[equalMask] = oldBsFinal[equalMask] + 1 #Avoid a divide by zero on the next line
-                    currSubinterval = ((2*np.array([newAsFinal, newBsFinal]) - oldAsFinal - oldBsFinal)/(oldBsFinal - oldAsFinal)).T
-                    #If the interval is exactly -1 or 1, make sure that shows up as exact.
-                    currSubinterval[equalMask,0] = -1
-                    currSubinterval[equalMask,1] = 1
-                    currSubinterval[:,0][oldAs == newAs] = -1
-                    currSubinterval[:,1][oldBs == newBs] = 1
-                    #Update the current subinterval. Use the best transform we can get here, but use the exact combined
-                    #interval for tracking
-                    combinedInterval.addTransform(currSubinterval)
-                    combinedInterval.interval = np.array([newAs, newBs]).T
-                    combinedInterval.reRun = True
-                    del resultExterior[idx2]
-                    del resultExterior[idx1]
-                    resultExterior.append(combinedInterval)
-                    idx2 = idx1 + 1
-                else:
-                    idx2 += 1
-            idx1 += 1
-            idx2 = idx1 + 1
-        #Rerun, check if still on exterior
-        newResultExterior = []
-        for tempInterval in resultExterior:
-            if tempInterval.reRun:
-                if np.all(tempInterval.interval == originalInterval.interval):
-                    newResultExterior.append(tempInterval)
-                else:
-                    #Project the MS onto the interval, then recall the function.
-                    #TODO: Instead of using the originalMs, use Ms, and then don't use the original interval, use the one
-                    #we started subdivision with.
-                    tempMs, tempErrors = transformChebToInterval(originalMs, *tempInterval.getLastTransform(), errors, solverOptions.exact)
-                    tempResultsInterior, tempResultsExterior = solvePolyRecursive(tempMs, tempInterval, tempErrors, solverOptions)
-                    #We can assume that nothing in these has to be recombined
-                    resultInterior += tempResultsInterior
-                    newResultExterior += tempResultsExterior
-            elif isExteriorInterval(originalInterval, tempInterval):
-                newResultExterior.append(tempInterval)
-            else:
-                resultInterior.append(tempInterval)
-        return resultInterior, newResultExterior
+    Call this instead of calling solvePolyRecursive directly.
+    """
+    if solverOptions.allowParallel and solverOptions.max_cpu > 1:
+        return solvePolyParallelMultilevel(
+            Ms,
+            trackedInterval,
+            errors,
+            solverOptions
+        )
+
+    return solvePolyRecursive(
+        Ms,
+        trackedInterval,
+        errors,
+        solverOptions,
+        returnChildren=False
+    )
 
 def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False, max_cpu=1):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
@@ -1482,7 +1907,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
 
     if verbose:
         print("Finding roots...", end=' ')
-    b1, b2 = solvePolyRecursive(Ms, originalInterval, errors, solverOptions)
+    b1, b2 = solvePoly(Ms, originalInterval, errors, solverOptions)
 
     boundingIntervals = b1 + b2
     roots = []
