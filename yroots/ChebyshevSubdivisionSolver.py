@@ -12,6 +12,9 @@ import warnings
 # Edit number 1
 from multiprocessing import Pool
 
+# Edit COO
+from sparse import COO
+
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
 
@@ -837,7 +840,14 @@ def getTransformationError(M, dim):
         The upper bound for the error associated with the transformation of dimension dim in M
     """
     machEps = 2**-52
-    error = M.shape[dim] * machEps * np.sum(np.abs(M))
+
+    if isinstance(M, CooCheb):
+        coeff_abs_sum = np.sum(np.abs(M.data))
+    else:
+        coeff_abs_sum = np.sum(np.abs(M))
+
+    error = M.shape[dim] * machEps * coeff_abs_sum
+
     return error #TODO: Figure out a more rigurous bound!
 
 def transformCheb(M, alphas, betas, error, exact):

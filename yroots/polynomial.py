@@ -2,6 +2,9 @@ import numpy as np
 from scipy.signal import convolve
 from numpy.polynomial import chebyshev as cheb
 from numpy.polynomial import polynomial as poly
+import sparse
+from math import comb
+from itertools import product
 
 def slice_top(matrix_shape):
     ''' Gets the n-d slices needed to slice a matrix into the top corner of another.
@@ -689,3 +692,522 @@ def polyvalnd(x,c):
     for i in range(1,n):
         c = poly.polyval(x[i],c,tensor=False)
     return c
+
+###############################################################################
+
+#### COO_Polynomial ###########################################################
+class CooPolynomial:
+    basis = None
+
+    def __init__(self, coeffs, shape=None, clean_coeff=True):
+        """
+        coeffs:
+            Can be one of:
+            - sparse.COO
+            - dense numpy array
+            - (coords, data) tuple
+        shape:
+            Required when coeffs is a (coords, data) tuple unless shape can be inferred.
+        prune_zeros:
+            If True, remove explicitly stored zeros.
+        """
+        if isinstance(coeffs, sparse.COO):
+            coo = coeffs
+        elif isinstance(coeffs, tuple) and len(coeffs) == 2:
+            coords, data = coeffs
+            coords = np.asarray(coords)
+            data = np.asarray(data)
+
+            # Check for any errors in COO data shapes
+            if coords.ndim != 2: raise ValueError("coords must be a 2D array with shape (ndim, nnz).")
+            if data.ndim != 1: raise ValueError("data must be a 1D array with shape (nnz,).")
+            if coords.shape[1] != data.shape[0]: raise ValueError("coords.shape[1] must equal data.shape[0].")
+            if shape is None:
+                if coords.shape[1] == 0: raise ValueError("shape is required when coords/data are empty.")
+                shape = tuple(coords.max(axis=1) + 1)
+
+            coo = sparse.COO(coords, data, shape=shape)
+        else:
+            coo = sparse.COO.from_numpy(np.asarray(coeffs))
+
+        if clean_coeff and 0 in coo.data:
+            coo = coo.copy()
+            coo.data = np.asarray(coo.data)
+            mask = coo.data != 0
+            coo.coords = coo.coords[:, mask]
+            coo.data = coo.data[mask]
+
+        self.coeff = coo
+        self.shape = coo.shape
+        self.dim = coo.ndim
+        self.dtype = coo.dtype
+
+    def __call__(self, points):
+        """
+        Evaluates the polynomial at the given point.
+
+        This method is overridden by the CooPower and CooCheb classes,
+        so this definition only checks if the polynomial can be evaluated
+        at the given point.
+
+        Parameters
+        ----------
+        points : array-like
+            The points at which to evaluate the polynomial.
+
+        Returns
+        -------
+        points : numpy array
+            Normalized array of points with shape (num_points, dim).
+        """
+        points = np.array(points)
+
+        if points.ndim == 0:
+            points = np.array([points])
+
+        if points.ndim == 1:
+            if self.dim > 1:
+                points = points.reshape(1, points.shape[0])
+            else:
+                points = points.reshape(points.shape[0], 1)
+
+        if points.shape[1] != self.dim:
+            raise ValueError(
+                "Dimension of points does not match dimension of polynomial!"
+            )
+
+        return points
+
+    def __eq__(self, other):
+        if not isinstance(other, CooPolynomial):
+            return False
+        
+        if self.shape != other.shape:
+            return False
+        
+        diff = self.coeff - other.coeff
+        return diff.nnz == 0 or np.allclose(diff.data, 0)
+
+    def __ne__(self, other):
+        """
+        Check if coeff matrix is not the same.
+        """
+        return not (self == other)
+
+    def __repr__(self):
+        return str(self.coeff)
+
+    def __str__(self):
+        return str(self.coeff)
+
+    @property
+    def nnz(self):
+        return self.coeff.nnz
+
+    @property
+    def density(self):
+        return self.nnz / np.prod(self.shape)
+
+    def to_dense(self):
+        return self.coeff.todense()
+
+    def copy(self):
+        return type(self)(self.coeff.copy())
+    
+###############################################################################
+
+#### COO_Power ###########################################################
+class CooPower(CooPolynomial):
+    basis = "power"
+
+    def __call__(self, points):
+        points = super().__call__(points)
+
+        coords = self.coeff.coords
+        data = self.coeff.data
+
+        num_points = points.shape[0]
+        values = np.zeros(num_points, dtype=np.result_type(points, data))
+
+        if self.nnz == 0:
+            return values[0] if num_points == 1 else values
+
+        powers = []
+        for dim in range(self.dim):
+            max_power = self.shape[dim] - 1
+            dim_powers = np.empty(
+                (num_points, max_power + 1),
+                dtype=np.result_type(points, data),
+            )
+            dim_powers[:, 0] = 1
+
+            for k in range(1, max_power + 1):
+                dim_powers[:, k] = dim_powers[:, k - 1] * points[:, dim]
+
+            powers.append(dim_powers)
+
+        for j in range(self.nnz):
+            term = data[j]
+
+            for dim in range(self.dim):
+                term = term * powers[dim][:, coords[dim, j]]
+
+            values += term
+
+        return values[0] if len(values) == 1 else values
+
+    def evaluate_grid(self, xyz):
+        """
+        Evaluate sparse power polynomial on a tensor-product grid.
+
+        xyz should have shape (num_axis_values, dim), matching the existing
+        MultiPower convention where each column contains values for one axis.
+        """
+        xyz = super().__call__(xyz)
+
+        coords = self.coeff.coords
+        data = self.coeff.data
+
+        axis_values = [xyz[:, dim] for dim in range(self.dim)]
+        grid_shape = tuple(len(axis) for axis in axis_values)
+
+        values = np.zeros(grid_shape, dtype=np.result_type(xyz, data))
+
+        if self.nnz == 0:
+            return values
+
+        powers = []
+        for dim, axis in enumerate(axis_values):
+            max_power = self.shape[dim] - 1
+            dim_powers = np.empty(
+                (len(axis), max_power + 1),
+                dtype=np.result_type(xyz, data),
+            )
+
+            dim_powers[:, 0] = 1
+
+            for k in range(1, max_power + 1):
+                dim_powers[:, k] = dim_powers[:, k - 1] * axis
+
+            powers.append(dim_powers)
+
+        for j in range(self.nnz):
+            term = data[j]
+
+            for dim in range(self.dim):
+                axis_term = powers[dim][:, coords[dim, j]]
+
+                shape = [1] * self.dim
+                shape[dim] = len(axis_term)
+
+                term = term * axis_term.reshape(shape)
+
+            values += term
+
+        if np.prod(values.shape) == 1:
+            return values.reshape(-1)[0]
+
+        return values
+
+    @staticmethod
+    def _coalesce_coords_data(coords, data, shape, result_dtype, tol=0.0):
+        """
+        Merge duplicate COO coordinates by summing their coefficients.
+        coords shape: (dim, nnz)
+        data shape: (nnz,)
+        """
+        if data.size == 0:
+            return coords, data.astype(result_dtype, copy=False)
+
+        linear = np.ravel_multi_index(coords, shape)
+
+        order = np.argsort(linear)
+        linear = linear[order]
+        data = data[order]
+
+        unique_linear, starts = np.unique(linear, return_index=True)
+        summed = np.add.reduceat(data, starts).astype(result_dtype, copy=False)
+
+        if tol == 0.0:
+            keep = summed != 0
+        else:
+            keep = np.abs(summed) > tol
+
+        unique_linear = unique_linear[keep]
+        summed = summed[keep]
+
+        if summed.size == 0:
+            empty_coords = np.empty((coords.shape[0], 0), dtype=np.int64)
+            empty_data = np.array([], dtype=result_dtype)
+            return empty_coords, empty_data
+
+        new_coords = np.array(np.unravel_index(unique_linear, shape), dtype=np.int64)
+        return new_coords, summed
+
+    @staticmethod
+    def _power_to_cheb_1d(n, dtype=float):
+        """
+        Convert x^n into Chebyshev coefficients.
+
+        Returns
+        -------
+        terms : list[tuple[int, scalar]]
+            List of (cheb_degree, coefficient) pairs.
+        """
+        if n < 0:
+            raise ValueError("Power must be nonnegative.")
+
+        if n == 0:
+            return [(0, dtype(1))]
+
+        terms = []
+
+        # k has same parity as n: n, n-2, n-4, ...
+        for k in range(n, -1, -2):
+            if k == 0:
+                coeff = comb(n, n // 2) / (2 ** n)
+            else:
+                coeff = comb(n, (n - k) // 2) / (2 ** (n - 1))
+
+            terms.append((k, dtype(coeff)))
+
+        return terms
+
+    def to_cheb(self, preserve_shape=False):
+        """
+        Convert a sparse power-basis polynomial to sparse Chebyshev basis.
+        """
+        coords = np.asarray(self.coeff.coords, dtype=np.int64)
+        data = np.asarray(self.coeff.data)
+
+        result_dtype = np.result_type(data, float)
+        scalar_dtype = np.dtype(result_dtype).type
+
+        if self.nnz == 0:
+            empty_coords = np.empty((self.dim, 0), dtype=np.int64)
+            empty_data = np.array([], dtype=result_dtype)
+            return CooCheb((empty_coords, empty_data), shape=self.shape)
+
+        power_cache = {}
+
+        def get_power_terms(power):
+            power = int(power)
+            if power not in power_cache:
+                terms = self._power_to_cheb_1d(power, dtype=scalar_dtype)
+
+                # Store as NumPy arrays instead of list[tuple].
+                idxs = np.array([t[0] for t in terms], dtype=np.int64)
+                vals = np.array([t[1] for t in terms], dtype=result_dtype)
+
+                power_cache[power] = (idxs, vals)
+
+            return power_cache[power]
+
+        coord_blocks = []
+        data_blocks = []
+
+        for j in range(self.nnz):
+            power_multi_index = coords[:, j]
+            coefficient = data[j]
+
+            per_dim = [get_power_terms(power) for power in power_multi_index]
+
+            idx_arrays = [p[0] for p in per_dim]
+            val_arrays = [p[1] for p in per_dim]
+
+            # Number of expanded Chebyshev terms for this monomial.
+            term_count = 1
+            for arr in idx_arrays:
+                term_count *= arr.size
+
+            if term_count == 1:
+                # Fast path for constants.
+                block_coords = np.zeros((self.dim, 1), dtype=np.int64)
+                block_data = np.array([coefficient], dtype=result_dtype)
+            else:
+                # Build tensor-product coordinate grid.
+                coord_grids = np.meshgrid(*idx_arrays, indexing="ij")
+                block_coords = np.vstack([g.ravel() for g in coord_grids]).astype(np.int64, copy=False)
+
+                # Build tensor-product coefficient grid.
+                coeff_grid = coefficient
+                for d, vals in enumerate(val_arrays):
+                    shape = [1] * self.dim
+                    shape[d] = vals.size
+                    coeff_grid = coeff_grid * vals.reshape(shape)
+
+                block_data = np.asarray(coeff_grid, dtype=result_dtype).ravel()
+
+            coord_blocks.append(block_coords)
+            data_blocks.append(block_data)
+
+        raw_coords = np.hstack(coord_blocks)
+        raw_data = np.concatenate(data_blocks).astype(result_dtype, copy=False)
+
+        # Coalesce using self.shape because Cheb degrees never exceed power degrees.
+        new_coords, new_data = self._coalesce_coords_data(raw_coords, raw_data, self.shape, result_dtype, tol=0.0)
+
+        if new_data.size == 0:
+            empty_coords = np.empty((self.dim, 0), dtype=np.int64)
+            empty_data = np.array([], dtype=result_dtype)
+            return CooCheb((empty_coords, empty_data), shape=self.shape)
+
+        if preserve_shape:
+            shape = self.shape
+        else:
+            shape = tuple(new_coords.max(axis=1) + 1)
+
+        return CooCheb((new_coords, new_data), shape=shape)
+
+###############################################################################
+
+#### COO_Cheb ###########################################################
+
+class CooCheb(CooPolynomial):
+    basis = "cheb"
+
+    def __call__(self, points):
+        """
+        Evaluate a sparse Chebyshev-basis polynomial at arbitrary points.
+
+        Parameters
+        ----------
+        points : array-like
+            Shape can be:
+            - scalar for one-dimensional polynomial
+            - (dim,) for one point
+            - (num_points, dim) for many points
+
+        Returns
+        -------
+        values : scalar or numpy.ndarray
+            Polynomial values at the given points.
+        """
+        points = super().__call__(points)
+
+        coords = self.coeff.coords      # shape: (dim, nnz)
+        data = self.coeff.data          # shape: (nnz,)
+
+        num_points = points.shape[0]
+        result_dtype = np.result_type(points, data)
+        values = np.zeros(num_points, dtype=result_dtype)
+
+        if self.nnz == 0:
+            return values[0] if num_points == 1 else values
+
+        # cheb_values[dim][:, k] stores T_k(points[:, dim])
+        cheb_values = []
+
+        for dim in range(self.dim):
+            max_degree = int(coords[dim].max())
+
+            dim_values = np.empty((num_points, max_degree + 1), dtype=result_dtype)
+
+            # T_0(x) = 1
+            dim_values[:, 0] = 1
+
+            if max_degree >= 1:
+                # T_1(x) = x
+                x = points[:, dim]
+                dim_values[:, 1] = x
+
+                # T_k(x) = 2xT_{k-1}(x) - T_{k-2}(x)
+                x2 = 2 * x
+                for k in range(2, max_degree + 1):
+                    dim_values[:, k] = (
+                        x2 * dim_values[:, k - 1]
+                        - dim_values[:, k - 2]
+                    )
+
+            cheb_values.append(dim_values)
+
+        for j in range(self.nnz):
+            term = data[j]
+
+            for dim in range(self.dim):
+                degree = coords[dim, j]
+                term = term * cheb_values[dim][:, degree]
+
+            values += term
+
+        return values[0] if num_points == 1 else values
+
+    def evaluate_grid(self, xyz):
+        """
+        Evaluate a sparse Chebyshev-basis polynomial on a tensor-product grid.
+
+        Parameters
+        ----------
+        xyz : array-like
+            Shape should be (num_axis_values, dim), matching the existing
+            MultiCheb convention where each column contains the values for
+            one axis.
+
+        Returns
+        -------
+        values : scalar or numpy.ndarray
+            Polynomial evaluated on the full tensor-product grid.
+        """
+        xyz = super().__call__(xyz)
+
+        coords = self.coeff.coords
+        data = self.coeff.data
+
+        axis_values = [xyz[:, dim] for dim in range(self.dim)]
+        grid_shape = tuple(len(axis) for axis in axis_values)
+
+        result_dtype = np.result_type(xyz, data)
+        values = np.zeros(grid_shape, dtype=result_dtype)
+
+        if self.nnz == 0:
+            return values.reshape(-1)[0] if np.prod(values.shape) == 1 else values
+
+        # cheb_values[dim][:, k] stores T_k(axis_values[dim])
+        cheb_values = []
+
+        for dim, axis in enumerate(axis_values):
+            max_degree = int(coords[dim].max())
+            dim_values = np.empty((len(axis), max_degree + 1), dtype=result_dtype)
+
+            # T_0(x) = 1
+            dim_values[:, 0] = 1
+
+            if max_degree >= 1:
+                # T_1(x) = x
+                dim_values[:, 1] = axis
+
+                # T_k(x) = 2xT_{k-1}(x) - T_{k-2}(x)
+                axis2 = 2 * axis
+                for k in range(2, max_degree + 1):
+                    dim_values[:, k] = (
+                        axis2 * dim_values[:, k - 1]
+                        - dim_values[:, k - 2]
+                    )
+
+            cheb_values.append(dim_values)
+
+        # Precompute broadcast shapes:
+        # dim 0 -> (len(x), 1, 1, ...)
+        # dim 1 -> (1, len(y), 1, ...)
+        # etc.
+        broadcast_shapes = []
+
+        for dim, axis in enumerate(axis_values):
+            shape = [1] * self.dim
+            shape[dim] = len(axis)
+            broadcast_shapes.append(tuple(shape))
+
+        for j in range(self.nnz):
+            term = data[j]
+
+            for dim in range(self.dim):
+                degree = coords[dim, j]
+                axis_term = cheb_values[dim][:, degree]
+                term = term * axis_term.reshape(broadcast_shapes[dim])
+
+            values += term
+
+        if np.prod(values.shape) == 1:
+            return values.reshape(-1)[0]
+
+        return values

@@ -4,8 +4,9 @@ import itertools
 import functools
 import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import yroots.ChebyshevApproximator as ChebyshevApproximator
-from yroots.polynomial import MultiCheb,MultiPower
+from yroots.polynomial import MultiCheb, MultiPower, CooPower, CooCheb
 from time import time
+from sparse import COO
 
 def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
@@ -85,6 +86,18 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     boundingBoxes : numpy array (optional)
         The exact intervals (boxes) in which each root is bound to lie.
     """
+    # Ensure that everything everything is either CooPower or CooCheb or none of them are
+    # Start TODO: Create CooPower, CooCheb
+    COO_POLY_TYPES = (CooPower, CooCheb)
+    is_coo_poly = [isinstance(f, COO_POLY_TYPES) for f in funcs]
+
+    if any(is_coo_poly) and not all(is_coo_poly):
+        raise TypeError(
+            "Functions must be either all CooPower/CooCheb objects or all non-COO polynomial objects; "
+            "mixed inputs are not allowed."
+        )
+    # End TODO
+
     # Ensure input functions and upper/lower bounds are valid
     if type(funcs) != list and type(funcs) != np.ndarray:
         funcs = [funcs]
@@ -121,7 +134,23 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     for i in range(dim):
         # t = time()
-        if isinstance(funcs[i], MultiPower):
+        # Start TODO
+        if isinstance(funcs[i], CooPower):
+            # TODO: Implement to_cheb for COO format
+            polys[i] = funcs[i].to_cheb().coeff
+            errs[i] = macheps
+            if not unit_box:
+                # TODO: Implement transformCheb for COO format
+                polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
+        elif isinstance(funcs[i], CooCheb):
+            polys[i] = funcs[i].coeff
+            errs[i] = macheps
+            if not unit_box:
+                # TODO: Implement transformCheb for COO format
+                polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
+        # End TODO
+            
+        elif isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
             errs[i] = macheps
             if not unit_box:
@@ -138,6 +167,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             print(f"{i}: {polys[i].shape}", end = " " if i != dim-1 else '\n')
     if verbose:
         print(f"Searching on interval {[[a[i],b[i]] for i in range(dim)]}")
+
+    return polys
 
     #Solve the Chebyshev polynomial system
     yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
