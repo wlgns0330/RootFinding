@@ -136,19 +136,15 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         # t = time()
         # Start TODO
         if isinstance(funcs[i], CooPower):
-            # TODO: Implement to_cheb for COO format
             polys[i] = funcs[i].to_cheb().coeff
             errs[i] = macheps
             if not unit_box:
-                # TODO: Implement transformCheb for COO format
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         elif isinstance(funcs[i], CooCheb):
             polys[i] = funcs[i].coeff
             errs[i] = macheps
             if not unit_box:
-                # TODO: Implement transformCheb for COO format
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
-        # End TODO
             
         elif isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()

@@ -14,6 +14,7 @@ from multiprocessing import Pool
 
 # Edit COO
 from sparse import COO
+from yroots.ChebyshevSubdivisionSolverCOO import build_cheb_transform_matrix, TransformChebInPlace1DCOO, TransformChebInPlace1DCOO_manual2
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -373,15 +374,21 @@ def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
     #TODO: Make this work for the power basis polynomials
     if (alpha == 1.0 and beta == 0.0) or coeffs.shape[dim] == 1:
         return coeffs # No need to transform if the degree of dim is 0 or transformation is the identity.
-    TransformFunc = TransformChebInPlace1DErrorFree if exact else TransformChebInPlace1D
+
+    if isinstance(coeffs, COO):
+        #TODO: Maybe implement TransformChebInPlace1DErrorFreeCOO?
+        TransformFunc = TransformChebInPlace1DCOO_manual2
+    else:
+        TransformFunc = TransformChebInPlace1DErrorFree if exact else TransformChebInPlace1D
     if dim == 0:
         return TransformFunc(coeffs, alpha, beta)
     else: # Need to transpose the matrix to line up the multiplication for the current dim
         # Move the current dimension to the dim 0 spot in the np array.
-        order = np.array([dim] + [i for i in range(dim)] + [i for i in range(dim+1, coeffs.ndim)])
+        order = tuple([dim] + [i for i in range(dim)] + [i for i in range(dim+1, coeffs.ndim)])
         # Then transpose with the inverted order after the transformation occurs.
         backOrder = np.zeros(coeffs.ndim, dtype = int)
-        backOrder[order] = np.arange(coeffs.ndim)
+        backOrder[list(order)] = np.arange(coeffs.ndim)
+        backOrder = tuple(backOrder)
         return TransformFunc(coeffs.transpose(order), alpha, beta).transpose(backOrder)
 
 class TrackedInterval:
@@ -841,7 +848,7 @@ def getTransformationError(M, dim):
     """
     machEps = 2**-52
 
-    if isinstance(M, CooCheb):
+    if isinstance(M, COO):
         coeff_abs_sum = np.sum(np.abs(M.data))
     else:
         coeff_abs_sum = np.sum(np.abs(M))
