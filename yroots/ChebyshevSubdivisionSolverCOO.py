@@ -142,14 +142,7 @@ def TransformChebInPlace1DCOO_manual(coeffs, alpha, beta, tol=1e-16):
             out_idx += 1
 
     result = COO(new_coords, new_data, shape=coeffs.shape)
-    result._sum_duplicates()
     return result
-
-
-import numpy as np
-from numba import njit
-from sparse import COO
-
 
 @njit
 def _precompute_C_columns_flat(C_dense, tol):
@@ -306,3 +299,20 @@ def TransformChebInPlace1DCOO_manual2(coeffs, alpha, beta, tol=1e-16):
     )
 
     return COO(new_coords, new_data, shape=coeffs.shape)
+
+def coo_constant_term(M):
+    if M.nnz == 0:
+        return 0.0
+
+    candidates = np.flatnonzero(M.coords[0] == 0)
+
+    if candidates.size == 0:
+        return 0.0
+
+    if M.coords.shape[0] > 1:
+        candidates = candidates[np.all(M.coords[1:, candidates] == 0, axis=0)]
+
+    if candidates.size == 0:
+        return 0.0
+
+    return np.sum(M.data[candidates])

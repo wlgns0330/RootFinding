@@ -14,7 +14,7 @@ from multiprocessing import Pool
 
 # Edit COO
 from sparse import COO
-from yroots.ChebyshevSubdivisionSolverCOO import build_cheb_transform_matrix, TransformChebInPlace1DCOO, TransformChebInPlace1DCOO_manual2
+from yroots.ChebyshevSubdivisionSolverCOO import TransformChebInPlace1DCOO_manual2, coo_constant_term
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -847,13 +847,12 @@ def getTransformationError(M, dim):
         The upper bound for the error associated with the transformation of dimension dim in M
     """
     machEps = 2**-52
-
     if isinstance(M, COO):
-        coeff_abs_sum = np.sum(np.abs(M.data))
+        abs_sum = np.sum(np.abs(M.data))
     else:
-        coeff_abs_sum = np.sum(np.abs(M))
-
-    error = M.shape[dim] * machEps * coeff_abs_sum
+        abs_sum = np.sum(np.abs(M))
+        
+    error = M.shape[dim] * machEps * abs_sum
 
     return error #TODO: Figure out a more rigurous bound!
 
@@ -881,7 +880,7 @@ def transformCheb(M, alphas, betas, error, exact):
         An upper bound on the error of the transformation
     """
     #This just does the matrix multiplication on each dimension. Except it's by a tensor.
-    for dim,n,alpha,beta in zip(range(M.ndim),M.shape,alphas,betas):
+    for dim,alpha,beta in zip(range(M.ndim),alphas,betas):
         error += getTransformationError(M, dim)
         M = TransformChebInPlaceND(M,dim,alpha,beta,exact)
     return M, error
@@ -1255,8 +1254,10 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     #If the absolute value of the constant term for any of the chebyshev polynomials is greater than the sum of the
     #absoulte values of any of the other terms, it will return that there are no zeros on that interval
     if solverOptions.constant_check:
-        consts = np.array([M.ravel()[0] for M in Ms])
-        err = np.array([np.sum(np.abs(M))-abs(c)+e for M,e,c in zip(Ms,errors,consts)])
+        consts = np.array([coo_constant_term(M) if isinstance(M, COO)
+                           else M.ravel()[0] for M in Ms])
+        err = np.array([np.sum(np.abs(M.data))-abs(c)+e if isinstance(M, COO)
+                        else np.sum(np.abs(M))-abs(c)+e for M,e,c in zip(Ms,errors,consts)])
         if np.any(np.abs(consts) > err):
             return [], []
 

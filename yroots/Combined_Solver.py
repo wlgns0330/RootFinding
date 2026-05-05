@@ -87,7 +87,6 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         The exact intervals (boxes) in which each root is bound to lie.
     """
     # Ensure that everything everything is either CooPower or CooCheb or none of them are
-    # Start TODO: Create CooPower, CooCheb
     COO_POLY_TYPES = (CooPower, CooCheb)
     is_coo_poly = [isinstance(f, COO_POLY_TYPES) for f in funcs]
 
@@ -96,7 +95,6 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             "Functions must be either all CooPower/CooCheb objects or all non-COO polynomial objects; "
             "mixed inputs are not allowed."
         )
-    # End TODO
 
     # Ensure input functions and upper/lower bounds are valid
     if type(funcs) != list and type(funcs) != np.ndarray:
@@ -134,7 +132,6 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     for i in range(dim):
         # t = time()
-        # Start TODO
         if isinstance(funcs[i], CooPower):
             polys[i] = funcs[i].to_cheb().coeff
             errs[i] = macheps
@@ -164,11 +161,11 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     if verbose:
         print(f"Searching on interval {[[a[i],b[i]] for i in range(dim)]}")
 
-    return polys
-
     #Solve the Chebyshev polynomial system
     yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
                 constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu)
+    
+    return polys
     
     #If the bounding box is the entire interval, subdivide it!
     usingSubdivision = np.all(b-a > minBoundingIntervalSize)

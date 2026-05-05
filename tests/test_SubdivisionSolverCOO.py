@@ -3,8 +3,10 @@ import pytest
 from sparse import COO
 
 # Change this import to match your project structure
-from yroots.ChebyshevSubdivisionSolver import TransformChebInPlace1D
-from yroots.ChebyshevSubdivisionSolverCOO import build_cheb_transform_matrix, TransformChebInPlace1DCOO, TransformChebInPlace1DCOO_manual, TransformChebInPlace1DCOO_manual2
+from yroots.ChebyshevSubdivisionSolver import TransformChebInPlace1D, transformCheb
+from yroots.ChebyshevSubdivisionSolverCOO import (build_cheb_transform_matrix, TransformChebInPlace1DCOO,
+    TransformChebInPlace1DCOO_manual, TransformChebInPlace1DCOO_manual2)
+from yroots.polynomial import CooPower
 
 
 def test_build_cheb_transform_matrix_n1():
@@ -152,7 +154,7 @@ def test_build_cheb_transform_matrix_matches_original_1d_transform(n):
     C = build_cheb_transform_matrix(n, alpha, beta)
 
     actual = C @ coeffs
-    expected = TransformChebInPlace1D_manual2(coeffs, alpha, beta)
+    expected = TransformChebInPlace1D(coeffs, alpha, beta)
 
     # TransformChebInPlace1D may return transformedCoeffs[:maxRow],
     # so pad it if needed.
@@ -259,3 +261,65 @@ def test_transform_cheb_in_place_1d_coo_preserves_shape(shape):
     actual = TransformChebInPlace1DCOO_manual2(sparse_coeffs, alpha, beta)
 
     assert actual.shape == shape
+
+def test_transformCheb_for_COO():
+    dim = 3
+    a = np.linspace(2, 3, dim)
+    b = np.linspace(-3, -1, dim)
+
+    # Each row is: [x_exp, y_exp, z_exp, coeff]
+    system_terms = np.array([
+    # f0(x, y, z)
+    [
+        [0, 0, 0,  1.0],
+        [1, 0, 0, -2.0],
+        [0, 1, 0,  0.5],
+        [0, 0, 2,  3.0],
+        [1, 1, 1, -1.5],
+    ],
+
+    # f1(x, y, z)
+    [
+        [0, 0, 0, -0.25],
+        [2, 0, 0,  1.0],
+        [0, 2, 0, -1.0],
+        [0, 0, 1,  2.5],
+        [1, 0, 1,  0.75],
+    ],
+
+    # f2(x, y, z)
+    [
+        [0, 0, 0,  0.8],
+        [0, 1, 0, -1.2],
+        [1, 0, 1,  2.0],
+        [0, 2, 1, -0.6],
+        [2, 1, 0,  1.4],
+    ],
+    ], dtype=np.float64)
+
+    def poly_from_terms(terms, dim):
+        exps = np.array([list(map(int, t[:dim])) for t in terms], dtype=np.int64)
+        coeffs = np.array([float(t[dim]) for t in terms], dtype=np.float64)
+
+        return exps.T, coeffs
+
+    sparse = [CooPower(poly_from_terms(c, dim)).coeff for c in system_terms]
+    dense = [func.todense() for func in sparse]
+
+    alphas = (b - a) / 2
+    betas = (b + a) / 2
+
+    polys1 = list(sparse)
+    polys2 = list(dense)
+    errs1 = np.array([0.]*dim)
+    errs2 = np.array([0.]*dim)
+    macheps = 2**-52
+
+    for i in range(dim):
+        polys1[i], errs1[i] = transformCheb(polys1[i], alphas, betas, errs1[i], exact=False)
+        polys2[i], errs2[i] = transformCheb(polys2[i], alphas, betas, errs2[i], exact=False)
+
+    polys1 = [func.todense() for func in polys1]
+
+    for M_sparse, M_dense in zip(polys1, polys2):
+        assert np.allclose(M_sparse, M_dense)
