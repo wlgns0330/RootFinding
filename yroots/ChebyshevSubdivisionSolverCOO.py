@@ -72,10 +72,6 @@ def TransformChebInPlace1DCOO(coeffs, alpha, beta):
 
     return (matmul(C, mat)).reshape(old_shape)
 
-import numpy as np
-from sparse import COO
-
-
 def _precompute_C_columns(C_dense, tol=1e-16):
     """
     For each column j of C, store only the nonzero rows k and values C[k, j].
@@ -300,7 +296,7 @@ def TransformChebInPlace1DCOO_manual2(coeffs, alpha, beta, tol=1e-16):
 
     return COO(new_coords, new_data, shape=coeffs.shape)
 
-def coo_constant_term(M):
+def getConstantTermCOO(M):
     if M.nnz == 0:
         return 0.0
 
@@ -316,3 +312,97 @@ def coo_constant_term(M):
         return 0.0
 
     return np.sum(M.data[candidates])
+
+@njit
+def _getLinearTermsCOO_core(coords, data, shape):
+    dim = coords.shape[0]
+    nnz = data.shape[0]
+
+    A = np.zeros(dim, dtype=data.dtype)
+
+    for k in range(nnz):
+        coord_sum = 0
+        one_dim = -1
+
+        for d in range(dim):
+            idx = coords[d, k]
+
+            if idx == 1:
+                coord_sum += 1
+                one_dim = d
+            elif idx != 0:
+                coord_sum = -1
+                break
+
+        if coord_sum == 1:
+            # Matches original dense behavior:
+            # if shape[d] == 1, linear coefficient is treated as 0.
+            if shape[one_dim] > 1:
+                A[one_dim] += data[k]
+
+    return A
+
+def getLinearTermsCOO(M):
+    return _getLinearTermsCOO_core(
+        M.coords,
+        M.data,
+        np.array(M.shape, dtype=np.int64),
+    )
+
+def trimOneCoo(M, allowedErrorIncrease, error):
+    """
+    Trim one sparse.COO Chebyshev coefficient tensor.
+
+    Returns
+    -------
+    M : COO
+        Trimmed COO coefficient tensor.
+
+    allowedErrorIncrease : float
+        Remaining allowed error increase.
+
+    error : float
+        Updated error bound.
+    """
+
+    dim = M.ndim
+
+    for currDim in range(dim):
+        # Keep trimming the current dimension while the highest-degree slice
+        # is small enough and we preserve at least degree 2, i.e. shape >= 3.
+        while M.shape[currDim] > 3:
+            last_index = M.shape[currDim] - 1
+
+            # Entries in the highest-degree slice of currDim.
+            last_mask = M.coords[currDim] == last_index
+
+            # Sum abs values of coefficients in that slice.
+            if np.any(last_mask):
+                lastSum = np.sum(np.abs(M.data[last_mask]))
+            else:
+                lastSum = 0.0
+
+            if lastSum >= allowedErrorIncrease:
+                break
+
+            # Remove entries from the highest-degree slice.
+            keep_mask = ~last_mask
+
+            new_coords = M.coords[:, keep_mask]
+            new_data = M.data[keep_mask]
+
+            new_shape = list(M.shape)
+            new_shape[currDim] -= 1
+            new_shape = tuple(new_shape)
+
+            M = COO(
+                coords=new_coords,
+                data=new_data,
+                shape=new_shape,
+            )
+
+            allowedErrorIncrease -= lastSum
+            error += lastSum
+
+    return M, error
+

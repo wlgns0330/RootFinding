@@ -2,6 +2,9 @@ import numpy as np
 import itertools
 from scipy import linalg as la
 from math import fabs
+from sparse import COO
+
+from yroots.QuadraticCheckCOO import quadratic_check_2D_coo, quadratic_check_3D_coo, quadratic_check_nd_coo
 
 def get_fixed_vars(dim):
     """Used in quadratic_check_nd to iterate through the boundaries of the domain.
@@ -23,13 +26,24 @@ def get_fixed_vars(dim):
                                              for r in range(dim-1,0,-1)))
 
 def quadratic_check(test_coeff, tol, nd_check=False):
-    if test_coeff.ndim == 2 and not nd_check:
+    if isinstance(test_coeff, COO):
+        if test_coeff.ndim == 2:
+            return quadratic_check_2D_coo(test_coeff, tol)
+        elif test_coeff.ndim == 3:
+            return quadratic_check_3D_coo(test_coeff, tol)
+        elif nd_check:
+            return quadratic_check_nd_coo(test_coeff, tol)
+        else:
+            return False
+
+    if test_coeff.ndim == 2:
         return quadratic_check_2D(test_coeff, tol)
-    elif test_coeff.ndim == 3 and not nd_check:
+    elif test_coeff.ndim == 3:
         return quadratic_check_3D(test_coeff, tol)
-    else:
+    elif nd_check:
         return quadratic_check_nd(test_coeff, tol)
-    #return quadratic_check_nd(test_coeff, tol)
+    else:
+        return False
 
 def quadratic_check_2D(test_coeff, tol):
     """One of subinterval_checks

@@ -1021,9 +1021,16 @@ class CooPower(CooPolynomial):
                 term_count *= arr.size
 
             if term_count == 1:
-                # Fast path for constants.
-                block_coords = np.zeros((self.dim, 1), dtype=np.int64)
-                block_data = np.array([coefficient], dtype=result_dtype)
+                 # Fast path when the monomial maps to exactly one Chebyshev term.
+                block_coords = np.empty((self.dim, 1), dtype=np.int64)
+                block_coeff = coefficient
+
+                for d in range(self.dim):
+                    block_coords[d, 0] = idx_arrays[d][0]
+                    block_coeff = block_coeff * val_arrays[d][0]
+
+                block_data = np.array([block_coeff], dtype=result_dtype)
+
             else:
                 # Build tensor-product coordinate grid.
                 coord_grids = np.meshgrid(*idx_arrays, indexing="ij")

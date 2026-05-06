@@ -323,3 +323,5 @@ def test_transformCheb_for_COO():
 
     for M_sparse, M_dense in zip(polys1, polys2):
         assert np.allclose(M_sparse, M_dense)
+
+    assert np.allclose(errs1, errs2)

@@ -14,7 +14,7 @@ from multiprocessing import Pool
 
 # Edit COO
 from sparse import COO
-from yroots.ChebyshevSubdivisionSolverCOO import TransformChebInPlace1DCOO_manual2, coo_constant_term
+from yroots.ChebyshevSubdivisionSolverCOO import TransformChebInPlace1DCOO_manual2, getConstantTermCOO, trimOneCoo, getLinearTermsCOO
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -674,11 +674,14 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
     minZoomForChange = 0.99 #If the volume doesn't shrink by this amount say that it hasn't changed
     minZoomForBaseCaseEnd = 0.4**dim #If the volume doesn't change by at least this amount when running with no error, stop
     #Get the matrix of the linear terms
-    A = np.array([getLinearTerms(M) for M in Ms])
+    A = np.array([getLinearTermsCOO(M) if isinstance(M, COO)
+                  else getLinearTerms(M) for M in Ms])
     #Get the Vector of the constant terms
-    consts = np.array([M.ravel()[0] for M in Ms])
+    consts = np.array([getConstantTermCOO(M) if isinstance(M, COO)
+                       else M.ravel()[0] for M in Ms])
     #Get the Error of everything else combined.
-    totalErrs = np.array([np.sum(np.abs(M)) + e for M,e in zip(Ms, errors)])
+    totalErrs = np.array([np.sum(np.abs(M.data)) + e if isinstance(M, COO)
+                          else np.sum(np.abs(M)) + e for M,e in zip(Ms, errors)])
     linear_sums = np.sum(np.abs(A),axis=1)
     err = np.array([tE-abs(c)-l for tE,c,l in zip(totalErrs,consts,linear_sums)])
 
@@ -1153,46 +1156,59 @@ def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
     return allMs, allErrors, allIntervals
 
 def trimMs(Ms, errors, relApproxTol=1e-3, absApproxTol=0):
-    """Reduces the degree of each chebyshev approximation M when doing so has negligible error.
-
-    The coefficient matrices are trimmed in place. This function iteratively looks at the highest
-    degree coefficient row of each M along each dimension and trims it as long as the error introduced
-    is less than the allowed error increase for that dimension.
+    """
+    Reduces the degree of each Chebyshev approximation M when doing so has
+    negligible error.
 
     Parameters
     ----------
-    Ms : list of numpy arrays
-        The chebyshev approximations of the functions
+    Ms : list
+        List of coefficient tensors or COO objects
+
     errors : numpy array
-        The max error of the chebyshev approximation from the function on the interval
-    relApproxTol : double
-        The relative error increase allowed
-    absApproxTol : double
-        The absolute error increase allowed
+        Error bounds for each polynomial.
+
+    relApproxTol : float
+        Relative error increase allowed.
+
+    absApproxTol : float
+        Absolute error increase allowed.
     """
     dim = Ms[0].ndim
-    for polyNum in range(len(Ms)): #Loop through the polynomials
+    for polyNum in range(len(Ms)):
+        M = Ms[polyNum]
         allowedErrorIncrease = absApproxTol + errors[polyNum] * relApproxTol
-        #Use slicing to look at a slice of the highest degree in the dimension we want to trim
-        slices = [slice(None) for i in range(dim)] # equivalent to selecting everything
-        for currDim in range(dim):
-            slices[currDim] = -1 # Now look at just the last row of the current dimension's approximation
-            lastSum = np.sum(np.abs(Ms[polyNum][tuple(slices)]))
 
-            # Iteratively eliminate the highest degree row of the current dimension if
-            # the sum of its approximation coefficients is of low error, but keep deg at least 2
-            while lastSum < allowedErrorIncrease and Ms[polyNum].shape[currDim] > 3:
-                # Trim the polynomial
-                slices[currDim] = slice(None,-1)
-                Ms[polyNum] = Ms[polyNum][tuple(slices)]
-                # Update the remaining error increase allowed an the error of the approximation.
-                allowedErrorIncrease -= lastSum
-                errors[polyNum] += lastSum
-                # Reset for the next iteration with the next highest degree of the current dimension.
+        if isinstance(M, COO):
+            M, errors[polyNum] = trimOneCoo(M, allowedErrorIncrease, errors[polyNum])
+            Ms[polyNum] = M
+
+        else:
+            # Use slicing to look at a slice of the highest degree
+            # in the dimension we want to trim.
+            slices = [slice(None) for _ in range(dim)]
+
+            for currDim in range(dim):
                 slices[currDim] = -1
-                lastSum = np.sum(np.abs(Ms[polyNum][tuple(slices)]))
-            # Reset to select all of the current dimension when looking at the next dimension.
-            slices[currDim] = slice(None)
+                lastSum = np.sum(np.abs(M[tuple(slices)]))
+
+                # Iteratively eliminate the highest degree row/slice
+                # if the coefficient sum is small enough.
+                # Keep degree at least 2, meaning shape at least 3.
+                while lastSum < allowedErrorIncrease and M.shape[currDim] > 3:
+                    slices[currDim] = slice(None, -1)
+
+                    M = M[tuple(slices)]
+
+                    allowedErrorIncrease -= lastSum
+                    errors[polyNum] += lastSum
+
+                    slices[currDim] = -1
+                    lastSum = np.sum(np.abs(M[tuple(slices)]))
+
+                slices[currDim] = slice(None)
+
+            Ms[polyNum] = M
 
 def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
@@ -1254,7 +1270,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     #If the absolute value of the constant term for any of the chebyshev polynomials is greater than the sum of the
     #absoulte values of any of the other terms, it will return that there are no zeros on that interval
     if solverOptions.constant_check:
-        consts = np.array([coo_constant_term(M) if isinstance(M, COO)
+        consts = np.array([getConstantTermCOO(M) if isinstance(M, COO)
                            else M.ravel()[0] for M in Ms])
         err = np.array([np.sum(np.abs(M.data))-abs(c)+e if isinstance(M, COO)
                         else np.sum(np.abs(M))-abs(c)+e for M,e,c in zip(Ms,errors,consts)])
@@ -1265,7 +1281,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     #More expensive than constant term check, but testing show it saves time in lower dimensions
     if (solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3) or solverOptions.all_dim_quadratic_check:
         for i in range(len(Ms)):
-            if quadratic_check(Ms[i], errors[i]):
+            if quadratic_check(Ms[i], errors[i], nd_check=solverOptions.all_dim_quadratic_check):
                 return [], []
 
     #Trim
