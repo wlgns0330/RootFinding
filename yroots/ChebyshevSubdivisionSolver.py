@@ -11,6 +11,7 @@ import warnings
 
 # Edit number 1
 from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -1200,6 +1201,27 @@ def _run_children(allMs, allErrors, allIntervals, solverOptions):
 
     with Pool(processes=nproc) as pool:
         return pool.starmap(solvePolyRecursive, tasks)
+    
+def _run_children_threaded(allMs, allErrors, allIntervals, solverOptions):
+    if not allIntervals:
+        return []
+
+    childSolverOptions = solverOptions.copy()
+    childSolverOptions.allowParallel = False
+
+    tasks = [
+        (newMs, newInt, newErrs, childSolverOptions)
+        for newMs, newErrs, newInt
+        in zip(allMs, allErrors, allIntervals)
+    ]
+
+    nproc = max(1, min(len(allIntervals), solverOptions.max_cpu))
+
+    with ThreadPoolExecutor(max_workers=nproc) as executor:
+        return list(executor.map(
+            lambda args: solvePolyRecursive(*args),
+            tasks
+        ))
 
 def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     """Recursively shrinks and subdivides the given interval to find the locations of all roots.
