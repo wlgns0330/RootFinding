@@ -25,8 +25,8 @@ def get_fixed_vars(dim):
     return list(itertools.chain.from_iterable(itertools.combinations(range(dim), r)\
                                              for r in range(dim-1,0,-1)))
 
-def quadratic_check(test_coeff, tol, nd_check=False):
-    if isinstance(test_coeff, COO):
+def quadratic_check(test_coeff, tol, isCOO, nd_check=False):
+    if isCOO:
         if test_coeff.ndim == 2:
             return quadratic_check_2D_coo(test_coeff, tol)
         elif test_coeff.ndim == 3:

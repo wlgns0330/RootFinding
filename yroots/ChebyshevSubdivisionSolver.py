@@ -13,8 +13,8 @@ import warnings
 from multiprocessing import Pool
 
 # Edit COO
-from sparse import COO
-from yroots.ChebyshevSubdivisionSolverCOO import TransformChebInPlace1DCOO_manual2, getConstantTermCOO, trimOneCoo, getLinearTermsCOO
+from yroots.ChebyshevSubdivisionSolverCOO import (getConstantTermCOO, trimOneCoo, getLinearConstTotalCOO,
+transformChebCOO_no_reinit, subdivideCOO_no_reinit, getConstAndAbsSumCOO_raw, TransformChebInPlace1DCOO_manual_axis_raw)
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -348,7 +348,7 @@ def TransformChebInPlace1DErrorFreeSplit(coeffs, betaSign):
         arr3E = arr
     return transformedCoeffs[:maxRow]
 
-def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
+def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact, isCOO):
     """Transforms a single dimension of a Chebyshev approximation for a polynomial.
 
     Parameters
@@ -363,6 +363,8 @@ def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
         The shifting of the transformation
     exact: bool
         Whether to perform the transformation with higher precision to minimize error
+    isCOO : bool
+        True if M is type COO
 
     Returns
     -------
@@ -375,21 +377,23 @@ def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
     if (alpha == 1.0 and beta == 0.0) or coeffs.shape[dim] == 1:
         return coeffs # No need to transform if the degree of dim is 0 or transformation is the identity.
 
-    if isinstance(coeffs, COO):
+    if isCOO:
         #TODO: Maybe implement TransformChebInPlace1DErrorFreeCOO?
-        TransformFunc = TransformChebInPlace1DCOO_manual2
+        return TransformChebInPlace1DCOO_manual_axis_raw(coeffs, dim, alpha, beta)
+        
     else:
         TransformFunc = TransformChebInPlace1DErrorFree if exact else TransformChebInPlace1D
-    if dim == 0:
-        return TransformFunc(coeffs, alpha, beta)
-    else: # Need to transpose the matrix to line up the multiplication for the current dim
-        # Move the current dimension to the dim 0 spot in the np array.
-        order = tuple([dim] + [i for i in range(dim)] + [i for i in range(dim+1, coeffs.ndim)])
-        # Then transpose with the inverted order after the transformation occurs.
-        backOrder = np.zeros(coeffs.ndim, dtype = int)
-        backOrder[list(order)] = np.arange(coeffs.ndim)
-        backOrder = tuple(backOrder)
-        return TransformFunc(coeffs.transpose(order), alpha, beta).transpose(backOrder)
+
+        if dim == 0:
+            return TransformFunc(coeffs, alpha, beta)
+        else: # Need to transpose the matrix to line up the multiplication for the current dim
+            # Move the current dimension to the dim 0 spot in the np array.
+            order = tuple([dim] + [i for i in range(dim)] + [i for i in range(dim+1, coeffs.ndim)])
+            # Then transpose with the inverted order after the transformation occurs.
+            backOrder = np.zeros(coeffs.ndim, dtype = int)
+            backOrder[list(order)] = np.arange(coeffs.ndim)
+            backOrder = tuple(backOrder)
+            return TransformFunc(coeffs.transpose(order), alpha, beta).transpose(backOrder)
 
 class TrackedInterval:
     """Tracks the properties of and changes to each interval as it passes through the solver.
@@ -643,7 +647,7 @@ def linearCheck1(totalErrs, A, consts):
                 b[col] = min(b[col], b_)
     return a, b
 
-def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
+def BoundingIntervalLinearSystem(Ms, errors, isCOO, finalStep, macheps = 2**-52):
     """Finds a smaller region in which any root must be.
 
     Parameters
@@ -652,6 +656,8 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
         Each numpy array is the coefficient tensor of a chebyshev polynomials
     errors : iterable of floats
         The maximum error of chebyshev approximations
+    isCOO : numpy array
+        Bool value of whether function is type COO
     finalStep : bool
         Whether we are in the final step of the algorithm
 
@@ -674,14 +680,34 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
     minZoomForChange = 0.99 #If the volume doesn't shrink by this amount say that it hasn't changed
     minZoomForBaseCaseEnd = 0.4**dim #If the volume doesn't change by at least this amount when running with no error, stop
     #Get the matrix of the linear terms
-    A = np.array([getLinearTermsCOO(M) if isinstance(M, COO)
-                  else getLinearTerms(M) for M in Ms])
-    #Get the Vector of the constant terms
-    consts = np.array([getConstantTermCOO(M) if isinstance(M, COO)
-                       else M.ravel()[0] for M in Ms])
-    #Get the Error of everything else combined.
-    totalErrs = np.array([np.sum(np.abs(M.data)) + e if isinstance(M, COO)
-                          else np.sum(np.abs(M)) + e for M,e in zip(Ms, errors)])
+    # A = np.array([getLinearTermsCOO(M) if isCOO[i]
+    #               else getLinearTerms(M) for i, M in enumerate(Ms)])
+    # #Get the Vector of the constant terms
+    # consts = np.array([getConstantTermCOO(M) if isCOO[i]
+    #                    else M.ravel()[0] for i, M in enumerate(Ms)])
+    # #Get the Error of everything else combined.
+    # totalErrs = np.array([np.sum(np.abs(M.data)) + e if isCOO[i]
+    #                       else np.sum(np.abs(M)) + e for i, (M,e) in enumerate(zip(Ms, errors))])
+    # linear_sums = np.sum(np.abs(A),axis=1)
+    # err = np.array([tE-abs(c)-l for tE,c,l in zip(totalErrs,consts,linear_sums)])
+
+    A = np.empty((dim, dim))
+    consts = np.empty(dim)
+    totalErrs = np.empty(dim)
+
+    for i, (M, e) in enumerate(zip(Ms, errors)):
+        if isCOO[i]:
+            A[i], consts[i], total = getLinearConstTotalCOO(
+                M.coords,
+                M.data,
+                M.ndim,
+            )
+            totalErrs[i] = total + e
+        else:
+            A[i] = getLinearTerms(M)
+            consts[i] = M.ravel()[0]
+            totalErrs[i] = np.sum(np.abs(M)) + e
+            
     linear_sums = np.sum(np.abs(A),axis=1)
     err = np.array([tE-abs(c)-l for tE,c,l in zip(totalErrs,consts,linear_sums)])
 
@@ -830,7 +856,7 @@ def getTransformPoints(newInterval):
     a,b = newInterval
     return (b-a)/2, (b+a)/2
 
-def getTransformationError(M, dim):
+def getTransformationError(M, dim, isCOO):
     """Returns an upper bound on the error of transforming the Chebyshev approximation M
 
     In the transformation of dimension dim in M, the matrix multiplication of M by the transformation
@@ -843,6 +869,8 @@ def getTransformationError(M, dim):
         The Chebyshev approximation coefficient tensor being transformed
     dim : int
         The dimension of M being transformed
+    isCOO : bool
+        True if M is type COO
 
     Returns
     -------
@@ -850,7 +878,7 @@ def getTransformationError(M, dim):
         The upper bound for the error associated with the transformation of dimension dim in M
     """
     machEps = 2**-52
-    if isinstance(M, COO):
+    if isCOO:
         abs_sum = np.sum(np.abs(M.data))
     else:
         abs_sum = np.sum(np.abs(M))
@@ -859,7 +887,7 @@ def getTransformationError(M, dim):
 
     return error #TODO: Figure out a more rigurous bound!
 
-def transformCheb(M, alphas, betas, error, exact):
+def transformCheb(M, alphas, betas, error, exact, isCOO):
     """Transforms an entire Chebyshev coefficient matrix using the transformation xHat = alpha*x + beta.
 
     Parameters
@@ -874,6 +902,8 @@ def transformCheb(M, alphas, betas, error, exact):
         A bound on the error of the chebyshev approximation
     exact : bool
         Whether to perform the transformation with higher precision to minimize error
+    isCOO : numpy array
+        Array of bool values 
 
     Returns
     -------
@@ -883,12 +913,15 @@ def transformCheb(M, alphas, betas, error, exact):
         An upper bound on the error of the transformation
     """
     #This just does the matrix multiplication on each dimension. Except it's by a tensor.
+    if isCOO:
+        return transformChebCOO_no_reinit(M, alphas, betas, error)
+    
     for dim,alpha,beta in zip(range(M.ndim),alphas,betas):
-        error += getTransformationError(M, dim)
-        M = TransformChebInPlaceND(M,dim,alpha,beta,exact)
+        error += getTransformationError(M, dim, isCOO)
+        M = TransformChebInPlaceND(M,dim,alpha,beta,exact,isCOO)
     return M, error
 
-def transformChebToInterval(Ms, alphas, betas, errors, exact):
+def transformChebToInterval(Ms, alphas, betas, errors, isCOO, exact):
     """Transforms an entire list of Chebyshev approximations to a new interval xHat = alpha*x + beta.
 
     Parameters
@@ -901,6 +934,8 @@ def transformChebToInterval(Ms, alphas, betas, errors, exact):
         The offsets of the transformation we are doing.
     errors : numpy array
         A bound on the error of each Chebyshev approximation
+    isCOO : numpy array
+        Bool value of whether function is type COO
     exact : bool
         Whether to perform the transformation with higher precision to minimize error
 
@@ -914,13 +949,13 @@ def transformChebToInterval(Ms, alphas, betas, errors, exact):
     #Transform the chebyshev polynomials
     newMs = []
     newErrors = []
-    for M,e in zip(Ms, errors):
-        newM, newE = transformCheb(M, alphas, betas, e, exact)
+    for i, (M,e) in enumerate(zip(Ms, errors)):
+        newM, newE = transformCheb(M, alphas, betas, e, exact, isCOO[i])
         newMs.append(newM)
         newErrors.append(newE)
     return newMs, np.array(newErrors)
 
-def zoomInOnIntervalIter(Ms, errors, trackedInterval, exact):
+def zoomInOnIntervalIter(Ms, errors, trackedInterval, isCOO, exact):
     """One iteration of shrinking an interval that may contain roots.
 
     Calls BoundingIntervaLinearSystem which determines a smaller interval in which any roots are
@@ -935,6 +970,8 @@ def zoomInOnIntervalIter(Ms, errors, trackedInterval, exact):
         An upper bound on the error of each Chebyshev approximation
     trackedInterval : TrackedInterval
         The current interval for which the Chebyshev approximations are valid
+    isCOO : numpy array
+        Bool value of whether function is type COO
     exact : bool
         Whether the transformation should be done with higher precision to minimize error
 
@@ -954,7 +991,7 @@ def zoomInOnIntervalIter(Ms, errors, trackedInterval, exact):
 
     dim = len(Ms)
     #Zoom in on the current interval
-    interval, changed, should_stop, throwOut = BoundingIntervalLinearSystem(Ms, errors, trackedInterval.finalStep)
+    interval, changed, should_stop, throwOut = BoundingIntervalLinearSystem(Ms, errors, isCOO, trackedInterval.finalStep)
     #Don't zoom in if we're already at a point
     for dim in range(len(Ms)):
         if trackedInterval.interval[dim,0] == trackedInterval.interval[dim,1]:
@@ -974,7 +1011,7 @@ def zoomInOnIntervalIter(Ms, errors, trackedInterval, exact):
         return Ms, errors, trackedInterval, changed, should_stop
     #Transform the chebyshev polynomials
     trackedInterval.addTransform(interval)
-    Ms, errors = transformChebToInterval(Ms, *trackedInterval.getLastTransform(), errors, exact)
+    Ms, errors = transformChebToInterval(Ms, *trackedInterval.getLastTransform(), errors, isCOO, exact)
     #We should stop in the final step once the interval has become a point
     if trackedInterval.finalStep and trackedInterval.isPoint():
         should_stop = True
@@ -982,7 +1019,7 @@ def zoomInOnIntervalIter(Ms, errors, trackedInterval, exact):
 
     return Ms, errors, trackedInterval, changed, should_stop
 
-def chebTransform1D(M, alpha, beta, transformDim, exact):
+def chebTransform1D(M, alpha, beta, transformDim, isCOO, exact):
     """Transforms a single dimension of a Chebyshev coefficient matrix.
 
     Parameters
@@ -1003,7 +1040,7 @@ def chebTransform1D(M, alpha, beta, transformDim, exact):
     transformed_M : numpy array
         The Chebyshev coefficient matrix transformed to the new interval in dimension transformDim
     """
-    return TransformChebInPlaceND(M, transformDim, alpha, beta, exact)
+    return TransformChebInPlaceND(M, transformDim, alpha, beta, exact, isCOO)
 
 def getInverseOrder(order):
     """Gets a particular order of matrices needed in getSubdivisionIntervals (helper function).
@@ -1075,7 +1112,7 @@ def getSubdivisionDims(Ms,trackedInterval,level):
                     dims_to_consider = np.delete(dims_to_consider, np.argwhere(dims_to_consider==i))
         return np.vstack([dims_to_consider[np.argsort(np.array(M.shape)[dims_to_consider])[::-1]] for M in Ms])
 
-def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
+def getSubdivisionIntervals(Ms, errors, trackedInterval, isCOO, exact, level):
     """Gets the matrices, error bounds, and intervals for the next iteration of subdivision.
 
     Parameters
@@ -1086,6 +1123,8 @@ def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
         An upper bound on the error of each Chebyshev approximation
     trackedInterval : trackedInterval
         The interval to be subdivided
+    isCOO : numpy array
+        Bool value of whether function is type COO
     exact : bool
         Whether transformations should be completed with higher precision to minimize error
     level : int
@@ -1107,23 +1146,58 @@ def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
     allMs = []
     allErrors = []
     idx = 0
-    for M,error,order in zip(Ms, errors, subdivisionDims):
+    for i, (M,error,order) in enumerate(zip(Ms, errors, subdivisionDims)):
         idx += 1
-        #Iterate through the dimensions, highest degree first.
-        currMs, currErrs = [M],[error]
-        for thisDim in order:
-            newMidpoint = trackedInterval.nextTransformPoints[thisDim]
-            alpha, beta = (newMidpoint+1)/2, (newMidpoint-1)/2
-            tempMs = []
-            tempErrs = []
-            for T,E in zip(currMs, currErrs):
-                #Transform the polys
-                P1, P2 = chebTransform1D(T, alpha, beta, thisDim, exact), chebTransform1D(T, -beta, alpha, thisDim, exact)
-                E1 = getTransformationError(T, thisDim)
-                tempMs += [P1, P2]
-                tempErrs += [E1 + E, E1 + E]
-            currMs = tempMs
-            currErrs = tempErrs
+
+
+        # #Iterate through the dimensions, highest degree first.
+        # currMs, currErrs = [M],[error]
+        # for thisDim in order:
+        #     newMidpoint = trackedInterval.nextTransformPoints[thisDim]
+        #     alpha, beta = (newMidpoint+1)/2, (newMidpoint-1)/2
+        #     tempMs = []
+        #     tempErrs = []
+        #     for T,E in zip(currMs, currErrs):
+        #         #Transform the polys
+        #         P1, P2 = chebTransform1D(T, alpha, beta, thisDim, isCOO[i], exact), chebTransform1D(T, -beta, alpha, thisDim, isCOO[i], exact)
+        #         E1 = getTransformationError(T, thisDim, isCOO[i])
+        #         tempMs += [P1, P2]
+        #         tempErrs += [E1 + E, E1 + E]
+        #     currMs = tempMs
+        #     currErrs = tempErrs
+
+        if isCOO[i]:
+            currMs, currErrs = subdivideCOO_no_reinit(
+                M,
+                error,
+                order,
+                trackedInterval,
+                coalesce_every=2
+            )
+        
+        else:
+            currMs, currErrs = [M], [error]
+
+            for thisDim in order:
+                newMidpoint = trackedInterval.nextTransformPoints[thisDim]
+                alpha, beta = (newMidpoint + 1) / 2, (newMidpoint - 1) / 2
+
+                tempMs = []
+                tempErrs = []
+
+                for T, E in zip(currMs, currErrs):
+                    P1 = chebTransform1D(T, alpha, beta, thisDim, False, exact)
+                    P2 = chebTransform1D(T, -beta, alpha, thisDim, False, exact)
+
+                    E1 = getTransformationError(T, thisDim, False)
+
+                    tempMs += [P1, P2]
+                    tempErrs += [E1 + E, E1 + E]
+
+                currMs = tempMs
+                currErrs = tempErrs
+
+
         if M.ndim == 1:
             allMs.append(currMs) #Already ordered because there's only 1.
             allErrors.append(currErrs) #Already ordered because there's only 1.
@@ -1155,7 +1229,7 @@ def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
         allIntervals = newIntervals
     return allMs, allErrors, allIntervals
 
-def trimMs(Ms, errors, relApproxTol=1e-3, absApproxTol=0):
+def trimMs(Ms, errors, isCOO, relApproxTol=1e-3, absApproxTol=0):
     """
     Reduces the degree of each Chebyshev approximation M when doing so has
     negligible error.
@@ -1168,6 +1242,9 @@ def trimMs(Ms, errors, relApproxTol=1e-3, absApproxTol=0):
     errors : numpy array
         Error bounds for each polynomial.
 
+    isCOO : numpy array
+        Bool value of whether function is type COO
+
     relApproxTol : float
         Relative error increase allowed.
 
@@ -1179,7 +1256,7 @@ def trimMs(Ms, errors, relApproxTol=1e-3, absApproxTol=0):
         M = Ms[polyNum]
         allowedErrorIncrease = absApproxTol + errors[polyNum] * relApproxTol
 
-        if isinstance(M, COO):
+        if isCOO[polyNum]:
             M, errors[polyNum] = trimOneCoo(M, allowedErrorIncrease, errors[polyNum])
             Ms[polyNum] = M
 
@@ -1233,7 +1310,7 @@ def _run_children(allMs, allErrors, allIntervals, solverOptions):
     with Pool(processes=nproc) as pool:
         return pool.starmap(solvePolyRecursive, tasks)
 
-def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
+def solvePolyRecursive(Ms, trackedInterval, errors, isCOO, solverOptions):
     """Recursively shrinks and subdivides the given interval to find the locations of all roots.
 
     Parameters
@@ -1244,6 +1321,8 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
         The information about the interval we are solving on.
     errors : numpy array
         An upper bound for the error of the Chebyshev approximation of the function on the interval
+    isCOO : numpy array
+        Bool value of whether function is type COO
     solverOptions : SolverOptions
         Desired settings for running interval checks, transformations, and subdivision.
 
@@ -1270,10 +1349,19 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     #If the absolute value of the constant term for any of the chebyshev polynomials is greater than the sum of the
     #absoulte values of any of the other terms, it will return that there are no zeros on that interval
     if solverOptions.constant_check:
-        consts = np.array([getConstantTermCOO(M) if isinstance(M, COO)
-                           else M.ravel()[0] for M in Ms])
-        err = np.array([np.sum(np.abs(M.data))-abs(c)+e if isinstance(M, COO)
-                        else np.sum(np.abs(M))-abs(c)+e for M,e,c in zip(Ms,errors,consts)])
+        consts = np.empty(len(Ms))
+        err = np.empty(len(Ms))
+
+        for i, (M, e) in enumerate(zip(Ms, errors)):
+            if isCOO[i]:
+                c, total = getConstAndAbsSumCOO_raw(M.coords, M.data)
+                consts[i] = c
+                err[i] = total - abs(c) + e
+            else:
+                c = M.ravel()[0]
+                consts[i] = c
+                err[i] = np.sum(np.abs(M)) - abs(c) + e
+
         if np.any(np.abs(consts) > err):
             return [], []
 
@@ -1281,7 +1369,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     #More expensive than constant term check, but testing show it saves time in lower dimensions
     if (solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3) or solverOptions.all_dim_quadratic_check:
         for i in range(len(Ms)):
-            if quadratic_check(Ms[i], errors[i], nd_check=solverOptions.all_dim_quadratic_check):
+            if quadratic_check(Ms[i], errors[i], isCOO[i], nd_check=solverOptions.all_dim_quadratic_check):
                 return [], []
 
     #Trim
@@ -1290,7 +1378,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     trackedInterval = trackedInterval.copy()
     errors = errors.copy()
     tolerable_error = max(errors) * 1e-3
-    trimMs(Ms, errors)
+    trimMs(Ms, errors, isCOO)
 
     #Solve
     dim = Ms[0].ndim
@@ -1303,7 +1391,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     start_time = time()
     while changed and zoomCount <= solverOptions.maxZoomCount:
         #Zoom in until we stop changing or we hit machine epsilon
-        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(Ms, errors, trackedInterval, solverOptions.exact)
+        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(Ms, errors, trackedInterval, isCOO, solverOptions.exact)
         if trackedInterval.empty: #Throw out the interval
             return [], []
         #Only count in towards the max is we don't cut the interval in half
@@ -1323,10 +1411,10 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 return [trackedInterval], []
         else:
             trackedInterval.startFinalStep()
-            return solvePolyRecursive(Ms, trackedInterval, errors, solverOptions)
+            return solvePolyRecursive(Ms, trackedInterval, errors, isCOO, solverOptions)
     elif trackedInterval.finalStep:
         trackedInterval.canThrowOutFinalStep = True
-        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
+        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, isCOO, solverOptions.exact, solverOptions.level)
 
         # Edit number 5
         resultsAll = []
@@ -1336,7 +1424,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultsAll += newInterior + newExterior
         else:
             for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
+                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, isCOO, solverOptions)
                 resultsAll += newInterior + newExterior
 
         if len(resultsAll) == 0:
@@ -1378,7 +1466,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                           "and having only finitely many simple roots on the search interval.")
         resultInterior, resultExterior = [], []
         #Get the new intervals and polynomials
-        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
+        allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, isCOO, solverOptions.exact, solverOptions.level)
         #Run each interval
 
         # Edit number 4
@@ -1389,7 +1477,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultExterior += newExterior
         else:
             for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
-                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
+                newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, isCOO, solverOptions)
                 resultInterior += newInterior
                 resultExterior += newExterior
 
@@ -1453,8 +1541,8 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                     #Project the MS onto the interval, then recall the function.
                     #TODO: Instead of using the originalMs, use Ms, and then don't use the original interval, use the one
                     #we started subdivision with.
-                    tempMs, tempErrors = transformChebToInterval(originalMs, *tempInterval.getLastTransform(), errors, solverOptions.exact)
-                    tempResultsInterior, tempResultsExterior = solvePolyRecursive(tempMs, tempInterval, tempErrors, solverOptions)
+                    tempMs, tempErrors = transformChebToInterval(originalMs, *tempInterval.getLastTransform(), errors, isCOO, solverOptions.exact)
+                    tempResultsInterior, tempResultsExterior = solvePolyRecursive(tempMs, tempInterval, tempErrors, isCOO, solverOptions)
                     #We can assume that nothing in these has to be recombined
                     resultInterior += tempResultsInterior
                     newResultExterior += tempResultsExterior
@@ -1464,7 +1552,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultInterior.append(tempInterval)
         return resultInterior, newResultExterior
 
-def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False, max_cpu=1):
+def solveChebyshevSubdivision(Ms, errors, isCOO, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False, max_cpu=1):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1473,6 +1561,8 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
         The chebyshev approximations of the functions on the interval given to CombinedSolver
     errors : numpy array
         The max error of the chebyshev approximation from the function on the interval
+    isCOO : numpy array
+        The bool value of whether a function is of type COO
     verbose : bool
         Defaults to False. Whether or not to output progress of solving to the terminal.
     returnBoundingBoxes : bool (Optional)
@@ -1512,7 +1602,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
 
     if verbose:
         print("Finding roots...", end=' ')
-    b1, b2 = solvePolyRecursive(Ms, originalInterval, errors, solverOptions)
+    b1, b2 = solvePolyRecursive(Ms, originalInterval, errors, isCOO, solverOptions)
 
     boundingIntervals = b1 + b2
     roots = []

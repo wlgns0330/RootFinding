@@ -693,9 +693,6 @@ def quadratic_check_nd_coo(test_coeff, tol):
         False otherwise.
     """
 
-    if not isinstance(test_coeff, COO):
-        raise TypeError("quadratic_check_nd_coo expects a sparse.COO object.")
-
     dim = test_coeff.ndim
 
     # Standard Chebyshev interval [-1, 1]^dim.

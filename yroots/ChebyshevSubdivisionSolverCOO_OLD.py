@@ -60,6 +60,86 @@ def build_cheb_transform_matrix(n, alpha, beta):
 
     return C
 
+def TransformChebInPlace1DCOO(coeffs, alpha, beta):
+    n = coeffs.shape[0]
+
+    C_dense = build_cheb_transform_matrix(n, alpha, beta)
+    C_dense[np.abs(C_dense) <= 1e-16] = 0.0
+    C = COO.from_numpy(C_dense)
+
+    old_shape = coeffs.shape
+    mat = coeffs.reshape((n, -1))
+
+    return (matmul(C, mat)).reshape(old_shape)
+
+def _precompute_C_columns(C_dense, tol=1e-16):
+    """
+    For each column j of C, store only the nonzero rows k and values C[k, j].
+    """
+    C_dense = C_dense.copy()
+    C_dense[np.abs(C_dense) <= tol] = 0.0
+
+    col_rows = []
+    col_vals = []
+
+    n = C_dense.shape[1]
+    for j in range(n):
+        rows = np.nonzero(C_dense[:, j])[0]
+        vals = C_dense[rows, j]
+
+        col_rows.append(rows)
+        col_vals.append(vals)
+
+    return col_rows, col_vals
+
+
+def TransformChebInPlace1DCOO_manual(coeffs, alpha, beta, tol=1e-16):
+    """
+    Apply a 1D Chebyshev transform along axis 0 of a COO coefficient tensor.
+
+    Computes:
+        new_coeffs[k, ...] = sum_j C[k, j] * coeffs[j, ...]
+
+    without using generic sparse matmul.
+    """
+    n = coeffs.shape[0]
+
+    if (alpha == 1.0 and beta == 0.0) or n == 1:
+        return coeffs
+
+    C_dense = build_cheb_transform_matrix(n, alpha, beta)
+    col_rows, col_vals = _precompute_C_columns(C_dense, tol=tol)
+
+    coords = coeffs.coords
+    data = coeffs.data
+    ndim = coeffs.ndim
+
+    # Count how many output terms we will create.
+    out_nnz = 0
+    for p in range(coeffs.nnz):
+        old_j = coords[0, p]
+        out_nnz += len(col_rows[old_j])
+
+    new_coords = np.empty((ndim, out_nnz), dtype=coords.dtype)
+    new_data = np.empty(out_nnz, dtype=data.dtype)
+
+    out_idx = 0
+    for p in range(coeffs.nnz):
+        old_j = coords[0, p]
+        old_val = data[p]
+
+        rows = col_rows[old_j]
+        vals = col_vals[old_j]
+
+        for k, cval in zip(rows, vals):
+            new_coords[:, out_idx] = coords[:, p]
+            new_coords[0, out_idx] = k
+            new_data[out_idx] = cval * old_val
+            out_idx += 1
+
+    result = COO(new_coords, new_data, shape=coeffs.shape)
+    return result
+
 @njit
 def _precompute_C_columns_flat(C_dense, tol):
     """
@@ -112,6 +192,136 @@ def _precompute_C_columns_flat(C_dense, tol):
                 idx += 1
 
     return col_ptrs, col_rows, col_vals
+
+
+@njit
+def _expand_cheb_axis0_coo(coords, data, ndim, col_ptrs, col_rows, col_vals):
+    """
+    Apply the Chebyshev transform along axis 0 by expanding COO coordinates.
+
+    Computes:
+
+        new_coeffs[k, ...] += C[k, j] * coeffs[j, ...]
+
+    where j is coords[0, p] for each nonzero coefficient.
+    """
+    nnz = data.shape[0]
+
+    # Count how many output terms we will create.
+    out_nnz = 0
+
+    for p in range(nnz):
+        old_j = coords[0, p]
+        out_nnz += col_ptrs[old_j + 1] - col_ptrs[old_j]
+
+    new_coords = np.empty((ndim, out_nnz), dtype=coords.dtype)
+    new_data = np.empty(out_nnz, dtype=data.dtype)
+
+    out_idx = 0
+
+    for p in range(nnz):
+        old_j = coords[0, p]
+        old_val = data[p]
+
+        start = col_ptrs[old_j]
+        end = col_ptrs[old_j + 1]
+
+        for q in range(start, end):
+            new_axis0 = col_rows[q]
+            cval = col_vals[q]
+
+            # Copy old coordinate.
+            for d in range(ndim):
+                new_coords[d, out_idx] = coords[d, p]
+
+            # Replace axis 0 coordinate with transformed row index.
+            new_coords[0, out_idx] = new_axis0
+
+            # Multiply coefficient value.
+            new_data[out_idx] = cval * old_val
+
+            out_idx += 1
+
+    return new_coords, new_data
+
+
+@njit
+def _TransformChebInPlace1DCOO_manual_helper(coords, data, shape0, ndim, alpha, beta, tol):
+    """
+    Numba helper for TransformChebInPlace1DCOO_manual.
+
+    Builds dense C, compresses its columns, and expands the COO representation.
+    """
+    C_dense = build_cheb_transform_matrix(shape0, alpha, beta)
+
+    col_ptrs, col_rows, col_vals = _precompute_C_columns_flat(C_dense, tol)
+
+    new_coords, new_data = _expand_cheb_axis0_coo(
+        coords,
+        data,
+        ndim,
+        col_ptrs,
+        col_rows,
+        col_vals,
+    )
+
+    return new_coords, new_data
+
+
+def TransformChebInPlace1DCOO_manual2(coeffs, alpha, beta, tol=1e-16):
+    """
+    Apply a 1D Chebyshev transform along axis 0 of a COO coefficient tensor.
+
+    This avoids generic sparse matmul:
+
+        mat = coeffs.reshape((n, -1))
+        out = matmul(C, mat).reshape(old_shape)
+
+    and instead directly expands COO coordinates using the nonzero columns of C.
+    """
+    n = coeffs.shape[0]
+
+    if (alpha == 1.0 and beta == 0.0) or n == 1:
+        return coeffs
+
+    new_coords, new_data = _TransformChebInPlace1DCOO_manual_helper(
+        coeffs.coords,
+        coeffs.data,
+        n,
+        coeffs.ndim,
+        alpha,
+        beta,
+        tol,
+    )
+
+    return COO(new_coords, new_data, shape=coeffs.shape)
+
+
+
+def TransformChebInPlace1DCOO_manual_axis(coeffs, dim, alpha, beta, tol=1e-16):
+    """
+    Apply a 1D Chebyshev transform along arbitrary axis `dim`
+    of a sparse.COO coefficient tensor.
+
+    Avoids transposing the COO array.
+    """
+    n = coeffs.shape[dim]
+
+    if (alpha == 1.0 and beta == 0.0) or n == 1:
+        return coeffs
+
+    new_coords, new_data = _TransformChebInPlace1DCOO_manual_helper_axis(
+        coeffs.coords,
+        coeffs.data,
+        n,
+        coeffs.ndim,
+        dim,
+        alpha,
+        beta,
+        tol,
+    )
+
+    return COO(new_coords, new_data, shape=coeffs.shape)
 
 @njit
 def _expand_cheb_axis_coo(coords, data, ndim, axis, col_ptrs, col_rows, col_vals):
@@ -246,7 +456,7 @@ def transformChebCOO_no_reinit(M, alphas, betas, error, tol=1e-16):
     return COO(coords, data, shape=shape), error
 
 
-def subdivideCOO_no_reinit(M, error, order, trackedInterval, tol=1e-16, coalesce_every=2):
+def subdivideCOO_no_reinit(M, error, order, trackedInterval, tol=1e-16, coalesce_every=1):
     """
     Subdivide one COO polynomial across all dimensions in `order`.
 
@@ -399,28 +609,25 @@ def coalesce_duplicates_coo_raw(coords, data, shape):
     return new_coords, new_data
 
 
-@njit
-def getConstantTermCOO_raw(coords, data):
-    ndim = coords.shape[0]
-    nnz = data.shape[0]
 
-    const = 0.0
 
-    for k in range(nnz):
-        is_const = True
-
-        for d in range(ndim):
-            if coords[d, k] != 0:
-                is_const = False
-                break
-
-        if is_const:
-            const += data[k]
-
-    return const
 
 def getConstantTermCOO(M):
-    return getConstantTermCOO_raw(M.coords, M.data)
+    if M.nnz == 0:
+        return 0.0
+
+    candidates = np.flatnonzero(M.coords[0] == 0)
+
+    if candidates.size == 0:
+        return 0.0
+
+    if M.coords.shape[0] > 1:
+        candidates = candidates[np.all(M.coords[1:, candidates] == 0, axis=0)]
+
+    if candidates.size == 0:
+        return 0.0
+
+    return np.sum(M.data[candidates])
 
 @njit
 def _getLinearTermsCOO_core(coords, data, shape):
@@ -457,29 +664,6 @@ def getLinearTermsCOO(M):
         M.data,
         np.array(M.shape, dtype=np.int64),
     )
-
-@njit
-def getConstAndAbsSumCOO_raw(coords, data):
-    ndim = coords.shape[0]
-    nnz = data.shape[0]
-
-    const = 0.0
-    total = 0.0
-
-    for k in range(nnz):
-        val = data[k]
-        total += abs(val)
-
-        is_const = True
-        for d in range(ndim):
-            if coords[d, k] != 0:
-                is_const = False
-                break
-
-        if is_const:
-            const += val
-
-    return const, total
 
 
 def trimOneCoo(M, allowedErrorIncrease, error):

@@ -108,6 +108,9 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         raise ValueError(f"Invalid input: at least one lower bound is greater than the corresponding upper bound.")
     polys = np.array(funcs)
     errs = np.array([0.]*dim)
+
+    isCOO = np.array([False]*dim)
+
     macheps = 2**-52
     unit_box = True
     # Check if original region is in the unit box
@@ -125,20 +128,19 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         # t = time()
         if isinstance(funcs[i], CooPower):
             polys[i] = funcs[i].to_cheb().coeff
-            print("Hello")
-            print(polys[i].todense())
             errs[i] = macheps
+            isCOO[i] = True
             if not unit_box:
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         elif isinstance(funcs[i], CooCheb):
             polys[i] = funcs[i].coeff
             errs[i] = macheps
+            isCOO[i] = True
             if not unit_box:
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
             
         elif isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
-            print(polys[i])
             errs[i] = macheps
             if not unit_box:
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
@@ -158,7 +160,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     # return polys, errs
 
     #Solve the Chebyshev polynomial system
-    yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
+    yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,isCOO,verbose,True,exact,
                 constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu)
     
     #If the bounding box is the entire interval, subdivide it!
