@@ -7,7 +7,8 @@ import yroots.ChebyshevApproximator as ChebyshevApproximator
 from yroots.polynomial import MultiCheb,MultiPower
 from time import time
 
-def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1):
+def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5,
+            max_cpu=1, parallel_depth=1):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
 
     Generates an approximation for each function using Chebyshev polynomials on the interval given,
@@ -141,7 +142,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     #Solve the Chebyshev polynomial system
     yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
-                constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu)
+                constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu, parallel_depth=parallel_depth)
     
     #If the bounding box is the entire interval, subdivide it!
     usingSubdivision = np.all(b-a > minBoundingIntervalSize)

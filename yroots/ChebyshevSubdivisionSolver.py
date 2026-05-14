@@ -10,7 +10,7 @@ import copy
 import warnings
 
 # Edit number 1
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -45,7 +45,7 @@ class SolverOptions():
         # Edit number 2
         # Parameters for parallelization
         self.max_cpu = 1
-        self.allowParallel = True
+        self.parallel_depth = 1
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
@@ -523,7 +523,7 @@ class TrackedInterval:
 
     def size(self):
         """Gets the volume of the current interval."""
-        return np.product(self.interval[:,1] - self.interval[:,0])
+        return np.prod(self.interval[:,1] - self.interval[:,0])
 
     def dimSize(self):
         """Gets the lengths along each dimension of the current interval."""
@@ -734,7 +734,7 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
 
         forceShouldStop = finalStep and not wellConditioned
         # Calculate the "changed" variable
-        newRatio = np.product(b - a) / 2**dim
+        newRatio = np.prod(b - a) / 2**dim
         if throwOut:
             changed = True
         elif i == 0:
@@ -1183,23 +1183,60 @@ def isExteriorInterval(originalInterval, trackedInterval):
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
 # Edit number 3
-# Runs the top level of subdivision in parallel
-# Turns off parallel for next level of subdivision
+def _solvePolyRecursive_worker(args):
+    """
+    Worker wrapper for multiprocessing.
+
+    This must be a top-level function so that it can be pickled and sent
+    to worker processes.
+    """
+    newMs, newInt, newErrs, childSolverOptions = args
+    return solvePolyRecursive(newMs, newInt, newErrs, childSolverOptions)
+
+def choose_nproc(num_tasks, max_cpu, parallel_depth):
+    """
+    Choose how many workers to use at the current recursion level.
+
+    If more parallel depth remains, do not spend the entire CPU budget at
+    this level. This leaves some CPU budget for child tasks to parallelize.
+    """
+    if num_tasks <= 0:
+        return 0
+
+    if max_cpu <= 1:
+        return 1
+
+    if parallel_depth <= 1:
+        return min(num_tasks, max_cpu)
+
+    return max(1, min(num_tasks, max_cpu // 2))
+
 def _run_children(allMs, allErrors, allIntervals, solverOptions):
     if not allIntervals:
         return []
 
+    num_tasks = len(allIntervals)
+    nproc = choose_nproc(num_tasks=num_tasks, max_cpu=solverOptions.max_cpu, parallel_depth=solverOptions.parallel_depth)
+    
+    if (solverOptions.max_cpu <= 1 or solverOptions.parallel_depth <= 0 or nproc <= 1):
+        results = []
+        for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
+            newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
+            results.append((newInterior, newExterior))
+        return results
+
+    # CPU budget available to each child if it tries to parallelize again.
+    child_max_cpu = max(1, solverOptions.max_cpu // nproc)
     tasks = []
-    childSolverOptions = solverOptions.copy()
-    childSolverOptions.allowParallel = False
 
     for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
+        childSolverOptions = solverOptions.copy()
+        childSolverOptions.parallel_depth = solverOptions.parallel_depth - 1
+        childSolverOptions.max_cpu = child_max_cpu
         tasks.append((newMs, newInt, newErrs, childSolverOptions))
 
-    nproc = max(1, min(len(allIntervals), solverOptions.max_cpu))
-
-    with Pool(processes=nproc) as pool:
-        return pool.starmap(solvePolyRecursive, tasks)
+    with ProcessPoolExecutor(max_workers=nproc) as executor:
+        return list(executor.map(_solvePolyRecursive_worker, tasks))
 
 def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
     """Recursively shrinks and subdivides the given interval to find the locations of all roots.
@@ -1296,17 +1333,13 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
 
         # Edit number 5
         resultsAll = []
-        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
+        if solverOptions.max_cpu > 1 and solverOptions.parallel_depth > 0:
             child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
             for newInterior, newExterior in child_results:
-                resultInterior += newInterior
-                resultExterior += newExterior
                 resultsAll += newInterior + newExterior
         else:
             for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
                 newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
-                resultInterior += newInterior
-                resultExterior += newExterior
                 resultsAll += newInterior + newExterior
 
         if len(resultsAll) == 0:
@@ -1352,7 +1385,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
         #Run each interval
 
         # Edit number 4
-        if solverOptions.allowParallel and solverOptions.max_cpu > 1:
+        if solverOptions.max_cpu > 1 and solverOptions.parallel_depth > 0:
             child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
             for newInterior, newExterior in child_results:
                 resultInterior += newInterior
@@ -1434,7 +1467,8 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 resultInterior.append(tempInterval)
         return resultInterior, newResultExterior
 
-def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True, all_dim_quadratic_check = False, max_cpu=1):
+def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True,
+                              all_dim_quadratic_check = False, max_cpu=1, parallel_depth=1):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1479,6 +1513,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     solverOptions.all_dim_quadratic_check = all_dim_quadratic_check
     solverOptions.useFinalStep = True
     solverOptions.max_cpu=max_cpu
+    solverOptions.parallel_depth=parallel_depth
 
     if verbose:
         print("Finding roots...", end=' ')
