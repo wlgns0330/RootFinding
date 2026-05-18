@@ -1271,7 +1271,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
             return [], []
 
     #Runs quadratic check after constant check, only for dimensions 2 and 3 by default
-    #More expensive than constant term check, but testing show it saves time in lower dimensions
+    #More expensive than constant term check, but testing shows it saves time in lower dimensions
     if (solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3) or solverOptions.all_dim_quadratic_check:
         for i in range(len(Ms)):
             if quadratic_check(Ms[i], errors[i]):
@@ -1455,7 +1455,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
         return resultInterior, newResultExterior
 
 def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True, low_dim_quadratic_check = True,
-                              all_dim_quadratic_check = False, max_cpu=1, parallel_depth=1):
+                              all_dim_quadratic_check = False, max_cpu=1, parallel_depth=2):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1476,6 +1476,10 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
         Defaults to True. Whether or not to run quadratic check in dim 2, 3.
     all_dim_quadratic_check : bool
         Defaults to False. Whether or not to run quadratic check in dim >= 4.
+    max_cpu : int:
+        Defaults to 1. The maximum number of CPU that can be active at the same time.
+    parallel_depth : int
+        Defaults to 2. Must be 0, 1, or 2. 0 = serial, 1 = top_level parallelization, 2 = two levels of parallelization
 
     Returns
     -------

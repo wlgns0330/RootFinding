@@ -8,7 +8,7 @@ from yroots.polynomial import MultiCheb,MultiPower
 from time import time
 
 def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5,
-            max_cpu=1, parallel_depth=1):
+            max_cpu=1, parallel_depth=2):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
 
     Generates an approximation for each function using Chebyshev polynomials on the interval given,
@@ -81,7 +81,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     max_cpu : int:
         Defaults to 1. The maximum number of CPU that can be active at the same time.
     parallel_depth : int
-        Defaults to 1. Must be 0, 1, or 2. 0 = serial, 1 = top_level parallelization, 2 = two levels of parallelization
+        Defaults to 2. Must be 0, 1, or 2. 0 = serial, 1 = top_level parallelization, 2 = two levels of parallelization
 
     Returns
     -------
@@ -167,7 +167,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Solve recursively
             if verbose:
                 print("Re-solving on:", newA, newB)
-            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize)
+            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize,
+                                 max_cpu=max_cpu, parallel_depth=parallel_depth)
             if len(roots) != 0:
                 boundingBoxes.append(boxes)
                 yroots.append(roots)
@@ -194,7 +195,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Re-solve this box
             if verbose:
                 print("Re-solving on:", newA, newB)
-            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize)
+            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize,
+                                 max_cpu=max_cpu, parallel_depth=parallel_depth)
             if len(roots) > 0:
                 finalRoots.append(roots)
                 finalBoxes.append(boxes)
