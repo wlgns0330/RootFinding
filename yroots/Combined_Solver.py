@@ -78,6 +78,10 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         times. Should give more accurate roots when smaller. This number is absolute when the boudning interval in
         question is in [-1,1], and relative otherwise. So if an interval has an endpoint of magnitude > 1, then
         minBoundingIntervalSize is multipled by that value for that dimension.
+    max_cpu : int:
+        Defaults to 1. The maximum number of CPU that can be active at the same time.
+    parallel_depth : int
+        Defaults to 1. Must be 0, 1, or 2. 0 = serial, 1 = top_level parallelization, 2 = two levels of parallelization
 
     Returns
     -------
@@ -105,6 +109,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         raise ValueError(f"Invalid input: {len(a)} lower bounds were given but {len(b)} upper bounds were given")
     if (b<a).any():
         raise ValueError(f"Invalid input: at least one lower bound is greater than the corresponding upper bound.")
+    if parallel_depth not in [0, 1, 2]:
+        raise ValueError(f"Invalid input: parallel_depth must be 0, 1, or 2.")
     polys = np.array(funcs)
     errs = np.array([0.]*dim)
     macheps = 2**-52

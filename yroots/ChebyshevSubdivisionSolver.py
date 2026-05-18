@@ -11,6 +11,7 @@ import warnings
 
 # Edit number 1
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -1200,16 +1201,14 @@ def choose_nproc(num_tasks, max_cpu, parallel_depth):
     If more parallel depth remains, do not spend the entire CPU budget at
     this level. This leaves some CPU budget for child tasks to parallelize.
     """
-    if num_tasks <= 0:
-        return 0
 
-    if max_cpu <= 1:
+    if parallel_depth == 0:
         return 1
-
-    if parallel_depth <= 1:
+    elif parallel_depth == 1 or max_cpu < 6:
         return min(num_tasks, max_cpu)
+    elif parallel_depth == 2:
+        return min(num_tasks, int(np.sqrt(max_cpu)))
 
-    return max(1, min(num_tasks, max_cpu // 2))
 
 def _run_children(allMs, allErrors, allIntervals, solverOptions):
     if not allIntervals:
@@ -1218,7 +1217,7 @@ def _run_children(allMs, allErrors, allIntervals, solverOptions):
     num_tasks = len(allIntervals)
     nproc = choose_nproc(num_tasks=num_tasks, max_cpu=solverOptions.max_cpu, parallel_depth=solverOptions.parallel_depth)
     
-    if (solverOptions.max_cpu <= 1 or solverOptions.parallel_depth <= 0 or nproc <= 1):
+    if (solverOptions.parallel_depth <= 0 or nproc <= 1):
         results = []
         for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
             newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
@@ -1226,7 +1225,7 @@ def _run_children(allMs, allErrors, allIntervals, solverOptions):
         return results
 
     # CPU budget available to each child if it tries to parallelize again.
-    child_max_cpu = max(1, solverOptions.max_cpu // nproc)
+    child_max_cpu = max(1, (solverOptions.max_cpu - nproc) // nproc)
     tasks = []
 
     for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals):
@@ -1235,7 +1234,7 @@ def _run_children(allMs, allErrors, allIntervals, solverOptions):
         childSolverOptions.max_cpu = child_max_cpu
         tasks.append((newMs, newInt, newErrs, childSolverOptions))
 
-    with ProcessPoolExecutor(max_workers=nproc) as executor:
+    with ThreadPoolExecutor(max_workers=nproc) as executor:
         return list(executor.map(_solvePolyRecursive_worker, tasks))
 
 def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
@@ -1512,8 +1511,8 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     solverOptions.low_dim_quadratic_check = low_dim_quadratic_check
     solverOptions.all_dim_quadratic_check = all_dim_quadratic_check
     solverOptions.useFinalStep = True
-    solverOptions.max_cpu=max_cpu
-    solverOptions.parallel_depth=parallel_depth
+    solverOptions.max_cpu = max_cpu-1
+    solverOptions.parallel_depth = parallel_depth
 
     if verbose:
         print("Finding roots...", end=' ')
