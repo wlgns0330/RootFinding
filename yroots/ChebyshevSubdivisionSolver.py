@@ -2,15 +2,10 @@ import numpy as np
 from numba import njit, float64
 from numba.types import UniTuple
 from itertools import product
-from scipy.spatial import HalfspaceIntersection, QhullError
-from scipy.optimize import linprog
 from yroots.QuadraticCheck import quadratic_check
 from time import time
 import copy
 import warnings
-
-# Edit number 1
-from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
 
 class SolverOptions():
@@ -42,11 +37,8 @@ class SolverOptions():
         self.all_dim_quadratic_check = False
         self.maxZoomCount = 25
         self.level = 0
-
-        # Edit number 2
-        # Parameters for parallelization
         self.max_cpu = 1
-        self.parallel_depth = 1
+        self.parallel_depth = 0
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
@@ -1183,7 +1175,6 @@ def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
-# Edit number 3
 def _solvePolyRecursive_worker(args):
     """
     Worker wrapper for multiprocessing.
@@ -1330,7 +1321,6 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
         trackedInterval.canThrowOutFinalStep = True
         allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
 
-        # Edit number 5
         resultsAll = []
         if solverOptions.max_cpu > 1 and solverOptions.parallel_depth > 0:
             child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
@@ -1379,11 +1369,11 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                           "Ensure the input functions meet the requirements of being continuous, smooth," +
                           "and having only finitely many simple roots on the search interval.")
         resultInterior, resultExterior = [], []
+
         #Get the new intervals and polynomials
         allMs, allErrors, allIntervals = getSubdivisionIntervals(Ms, errors, trackedInterval, solverOptions.exact, solverOptions.level)
-        #Run each interval
 
-        # Edit number 4
+        #Run each interval
         if solverOptions.max_cpu > 1 and solverOptions.parallel_depth > 0:
             child_results = _run_children(allMs, allErrors, allIntervals, solverOptions)
             for newInterior, newExterior in child_results:
@@ -1394,8 +1384,6 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions):
                 newInterior, newExterior = solvePolyRecursive(newMs, newInt, newErrs, solverOptions)
                 resultInterior += newInterior
                 resultExterior += newExterior
-
-
 
         #Rerun the touching intervals
         idx1 = 0
