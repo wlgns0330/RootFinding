@@ -111,6 +111,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         raise ValueError(f"Invalid input: at least one lower bound is greater than the corresponding upper bound.")
     if parallel_depth not in [0, 1, 2]:
         raise ValueError(f"Invalid input: parallel_depth must be 0, 1, or 2.")
+    if max_cpu < 1:
+        raise ValueError(f"Invalid input: max_cpu must be greater than 0.")
     polys = np.array(funcs)
     errs = np.array([0.]*dim)
     macheps = 2**-52
