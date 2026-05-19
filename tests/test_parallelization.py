@@ -1,5 +1,7 @@
 import numpy as np
 import pytest
+import sys
+import sysconfig
 
 import yroots as yr
 from yroots import MultiPower
@@ -17,6 +19,9 @@ def sort_roots(roots):
 
     return roots[np.lexsort(roots.T[::-1])]
 
+def test_python_is_314t():
+    assert sys.version_info[:2] == (3, 14)
+    assert sysconfig.get_config_var("Py_GIL_DISABLED") == 1
 
 def assert_same_roots(actual, expected, tol=1e-10):
     actual = sort_roots(actual)
