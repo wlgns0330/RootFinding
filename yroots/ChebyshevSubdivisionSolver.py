@@ -11,7 +11,7 @@ import warnings
 
 # Edit number 1
 from dataclasses import dataclass
-from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from multiprocessing import Pool
 
 # Edit Edit
@@ -21,6 +21,7 @@ class SolveTask:
     trackedInterval: object
     errors: object
     parent_id: int | None = None
+    level: int = 0
 @dataclass
 class SubdivisionState:
     """
@@ -81,7 +82,10 @@ class SolverOptions():
         # Parameters for parallelization
         self.max_cpu = 1
         self.allowParallel = True
-        self.parallel_depth = 1
+        # Subdivision depth below which child tasks are pushed to the process
+        # pool. Tasks at or beyond this depth solve their children serially in
+        # the worker, avoiding the scheduling overhead of tiny tasks.
+        self.parallel_depth = np.inf
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
@@ -1219,9 +1223,9 @@ def isExteriorInterval(originalInterval, trackedInterval):
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
 # Edit Edit
-def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None):
+def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None, level=0):
     return [
-        SolveTask(newMs, newInt, newErrs, parent_id=parent_id)
+        SolveTask(newMs, newInt, newErrs, parent_id=parent_id, level=level)
         for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals)
     ]
 
@@ -1251,6 +1255,7 @@ def _solve_one_level_worker(task, solverOptions):
     """
     localOptions = solverOptions.copy()
     localOptions.allowParallel = False
+    localOptions.level = task.level
 
     return solvePolyRecursive(
         task.Ms,
@@ -1430,9 +1435,7 @@ def solvePolyParallelMultilevel(Ms, trackedInterval, errors, solverOptions):
 
     next_parent_id = 0
 
-    pendingTasks = [
-        SolveTask(Ms, trackedInterval, errors, parent_id=None)
-    ]
+    pendingTasks = [SolveTask(Ms, trackedInterval, errors, parent_id=None)]
 
     futures = set()
 
@@ -1520,7 +1523,7 @@ def solvePolyParallelMultilevel(Ms, trackedInterval, errors, solverOptions):
                 complete_result(parent_result, parent["parent_id"])
                 changed = True
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_parent = {}
 
         # Fill pool initially.
@@ -1576,10 +1579,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
     # Constant term check.
     if solverOptions.constant_check:
         consts = np.array([M.ravel()[0] for M in Ms])
-        err = np.array([
-            np.sum(np.abs(M)) - abs(c) + e
-            for M, e, c in zip(Ms, errors, consts)
-        ])
+        err = np.array([np.sum(np.abs(M)) - abs(c) + e for M, e, c in zip(Ms, errors, consts)])
 
         if np.any(np.abs(consts) > err):
             if returnChildren:
@@ -1587,9 +1587,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             return [], []
 
     # Quadratic check.
-    if (
-        solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3
-    ) or solverOptions.all_dim_quadratic_check:
+    if (solverOptions.low_dim_quadratic_check and Ms[0].ndim <= 3) or solverOptions.all_dim_quadratic_check:
         for i in range(len(Ms)):
             if quadratic_check(Ms[i], errors[i]):
                 if returnChildren:
@@ -1617,12 +1615,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
     start_time = time()
 
     while changed and zoomCount <= solverOptions.maxZoomCount:
-        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(
-            Ms,
-            errors,
-            trackedInterval,
-            solverOptions.exact
-        )
+        Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(Ms,errors,trackedInterval,solverOptions.exact)
 
         if trackedInterval.empty:
             if returnChildren:
@@ -1655,9 +1648,9 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
         else:
             trackedInterval.startFinalStep()
 
-            if returnChildren:
+            if returnChildren and solverOptions.level < solverOptions.parallel_depth:
                 # Continue solving this same interval in the global scheduler.
-                child = SolveTask(Ms, trackedInterval, errors)
+                child = SolveTask(Ms, trackedInterval, errors, level=solverOptions.level)
                 state = SubdivisionState(
                     originalMs=originalMs,
                     originalInterval=originalInterval,
@@ -1667,20 +1660,14 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
                     isFinalStep=False
                 )
 
-                return TaskResult(
-                    interior=[],
-                    exterior=[],
-                    childTasks=[child],
-                    subdivisionState=state
-                )
+                return TaskResult(interior=[], exterior=[], childTasks=[child], subdivisionState=state)
 
-            return solvePolyRecursive(
-                Ms,
-                trackedInterval,
-                errors,
-                solverOptions,
-                returnChildren=False
-            )
+            serialInterior, serialExterior = solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildren=False)
+
+            if returnChildren:
+                return TaskResult(interior=serialInterior, exterior=serialExterior, childTasks=[], subdivisionState=None)
+            
+            return serialInterior, serialExterior
 
     elif trackedInterval.finalStep:
         trackedInterval.canThrowOutFinalStep = True
@@ -1695,18 +1682,20 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             solverOptions.level
         )
 
-        childTasks = make_child_tasks(allMs, allErrors, allIntervals)
+        state = SubdivisionState(
+            originalMs=originalMs,
+            originalInterval=originalInterval,
+            trackedInterval=trackedInterval,
+            errors=errors,
+            solverOptions=solverOptions,
+            isFinalStep=True
+        )
 
-        if returnChildren:
-            state = SubdivisionState(
-                originalMs=originalMs,
-                originalInterval=originalInterval,
-                trackedInterval=trackedInterval,
-                errors=errors,
-                solverOptions=solverOptions,
-                isFinalStep=True
-            )
+        childTasks = make_child_tasks(
+            allMs, allErrors, allIntervals, level=solverOptions.level
+        )
 
+        if returnChildren and solverOptions.level < solverOptions.parallel_depth:
             return TaskResult(
                 interior=resultInterior,
                 exterior=resultExterior,
@@ -1714,9 +1703,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
                 subdivisionState=state
             )
 
-        # Sequential fallback.
-        resultsAll = []
-
+        # Solve children serially in this worker/process.
         for child in childTasks:
             newInterior, newExterior = solvePolyRecursive(
                 child.Ms,
@@ -1729,40 +1716,19 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             resultInterior += newInterior
             resultExterior += newExterior
 
-            resultsAll += newInterior
-            resultsAll += newExterior
+        resultInterior, resultExterior = finish_subdivision_state(
+            state, resultInterior, resultExterior
+        )
 
-        if len(resultsAll) == 0:
-            trackedInterval.possibleExtraRoot = True
-
-            if isExteriorInterval(originalInterval, trackedInterval):
-                return [], [trackedInterval]
-            else:
-                return [trackedInterval], []
-
-        else:
-            allFoundRoots = set()
-            tempResults = []
-
-            for result in resultsAll:
-                point = tuple(result.interval[:, 0])
-
-                if point in allFoundRoots:
-                    continue
-
-                allFoundRoots.add(point)
-                tempResults.append(result)
-
-            for result in tempResults:
-                if len(result.possibleDuplicateRoots) > 0:
-                    trackedInterval.possibleDuplicateRoots += result.possibleDuplicateRoots
-                else:
-                    trackedInterval.possibleDuplicateRoots.append(result.getFinalPoint())
-
-            if isExteriorInterval(originalInterval, trackedInterval):
-                return [], [trackedInterval]
-            else:
-                return [trackedInterval], []
+        if returnChildren:
+            return TaskResult(
+                interior=resultInterior,
+                exterior=resultExterior,
+                childTasks=[],
+                subdivisionState=None
+            )
+        
+        return resultInterior, resultExterior
 
     else:
         # Normal subdivision.
@@ -1792,18 +1758,20 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             solverOptions.level
         )
 
-        childTasks = make_child_tasks(allMs, allErrors, allIntervals)
+        state = SubdivisionState(
+            originalMs=originalMs,
+            originalInterval=originalInterval,
+            trackedInterval=trackedInterval,
+            errors=errors,
+            solverOptions=solverOptions,
+            isFinalStep=False
+        )
 
-        if returnChildren:
-            state = SubdivisionState(
-                originalMs=originalMs,
-                originalInterval=originalInterval,
-                trackedInterval=trackedInterval,
-                errors=errors,
-                solverOptions=solverOptions,
-                isFinalStep=False
-            )
+        childTasks = make_child_tasks(
+            allMs, allErrors, allIntervals, level=solverOptions.level
+        )
 
+        if returnChildren and solverOptions.level < solverOptions.parallel_depth:
             return TaskResult(
                 interior=resultInterior,
                 exterior=resultExterior,
@@ -1811,7 +1779,7 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
                 subdivisionState=state
             )
 
-        # Sequential fallback.
+        # Solve children serially in this worker/process.
         for child in childTasks:
             newInterior, newExterior = solvePolyRecursive(
                 child.Ms,
@@ -1824,18 +1792,18 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             resultInterior += newInterior
             resultExterior += newExterior
 
-        return finish_subdivision_state(
-            SubdivisionState(
-                originalMs=originalMs,
-                originalInterval=originalInterval,
-                trackedInterval=trackedInterval,
-                errors=errors,
-                solverOptions=solverOptions,
-                isFinalStep=False
-            ),
-            resultInterior,
-            resultExterior
+        resultInterior, resultExterior = finish_subdivision_state(
+            state, resultInterior, resultExterior
         )
+
+        if returnChildren:
+            return TaskResult(
+                interior=resultInterior,
+                exterior=resultExterior,
+                childTasks=[],
+                subdivisionState=None
+            )
+        return resultInterior, resultExterior
 
 
 def solvePoly(Ms, trackedInterval, errors, solverOptions):
@@ -1860,8 +1828,8 @@ def solvePoly(Ms, trackedInterval, errors, solverOptions):
         returnChildren=False
     )
 
-def solveChebyshevSubdivision(Ms, errors, verbose=False, returnBoundingBoxes=False, exact=False, constant_check=True,
-                              low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=1, parallel_depth=1):
+def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True,
+                              low_dim_quadratic_check = True,all_dim_quadratic_check = False, max_cpu=1, parallel_depth=1):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1905,7 +1873,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose=False, returnBoundingBoxes=Fal
     solverOptions.low_dim_quadratic_check = low_dim_quadratic_check
     solverOptions.all_dim_quadratic_check = all_dim_quadratic_check
     solverOptions.useFinalStep = True
-    solverOptions.max_cpu=max_cpu
+    solverOptions.max_cpu=max_cpu-1
     solverOptions.parallel_depth=parallel_depth
 
     if verbose:
