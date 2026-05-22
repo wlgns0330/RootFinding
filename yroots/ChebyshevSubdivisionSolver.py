@@ -2,8 +2,6 @@ import numpy as np
 from numba import njit, float64
 from numba.types import UniTuple
 from itertools import product
-from scipy.spatial import HalfspaceIntersection, QhullError
-from scipy.optimize import linprog
 from yroots.QuadraticCheck import quadratic_check
 from time import time
 import copy
@@ -12,7 +10,6 @@ import warnings
 # Edit number 1
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from multiprocessing import Pool
 
 # Edit Edit
 @dataclass
