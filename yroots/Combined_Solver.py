@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit
 import itertools
 import functools
-import yroots.ChebyshevSubdivisionSolverClaude as ChebyshevSubdivisionSolver
+import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import yroots.ChebyshevApproximator as ChebyshevApproximator
 from yroots.polynomial import MultiCheb,MultiPower
 from time import time
