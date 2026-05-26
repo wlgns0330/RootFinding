@@ -13,11 +13,6 @@ This project was supported in part by the National Science Foundation, grant num
 <!-- [![PyPI version](https://badge.fury.io/py/RootFinding.svg)](https://badge.fury.io/py/RootFinding) -->
 <!-- [![Code Health](https://landscape.io/github/tylerjarvis/RootFinding/pypackage/landscape.svg)](https://landscape.io/github/tylerjarvis/RootFinding/pypackage) -->
 
-<!-- [![Build Status](https://travis-ci.com/tylerjarvis/RootFinding.svg?branch=master)](https://travis-ci.com/tylerjarvis/RootFinding) -->
-<!-- [![codecov](https://codecov.io/gh/mtmoncur/tylerjarvis/branch/master/graphs/badge.svg)](https://codecov.io/gh/tylerjarvis/RootFinding) -->
-<!-- [![PyPI version](https://badge.fury.io/py/RootFinding.svg)](https://badge.fury.io/py/RootFinding) -->
-<!-- [![Code Health](https://landscape.io/github/tylerjarvis/RootFinding/pypackage/landscape.svg)](https://landscape.io/github/tylerjarvis/RootFinding/pypackage) -->
-
 ### Requirements
 * Python 3.14t (free-threaded build — see note below)
 * NumPy ≥ 2.4.4
@@ -43,9 +38,12 @@ uv sync
 ```
 
 With pip (requires Python 3.14t already installed):
-```pip install git+https://github.com/tylerjarvis/RootFinding.git```
 
-The package can then by imported using `import yroots`.
+```
+pip install git+https://github.com/tylerjarvis/RootFinding.git
+```
+
+The package can then be imported using `import yroots`.
 (We are currently working on adding the yroots package to The Python Package Index)
 
 ## Usage
@@ -67,7 +65,7 @@ b = np.array([0,1]) #upper bounds on x and y
 yr.solve([f,g],a,b)
 ```
 
-If the system includes polynomials, there are specialized `Polynomial` objects which may be allow for faster solving. See [Combined Notebook](https://github.com/tylerjarvis/RootFinding/blob/main/CombinedNotebook.ipynb) for more details.
+If the system includes polynomials, there are specialized `Polynomial` objects which may allow for faster solving. See [Combined Notebook](https://github.com/tylerjarvis/RootFinding/blob/main/CombinedNotebook.ipynb) for more details.
 
 
 ## Examples of Applications
