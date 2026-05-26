@@ -43,7 +43,7 @@ uv sync
 ```
 
 With pip (requires Python 3.14t already installed):
-`$ pip install git+https://github.com/tylerjarvis/RootFinding.git`
+```pip install git+https://github.com/tylerjarvis/RootFinding.git```
 
 The package can then by imported using `import yroots`.
 (We are currently working on adding the yroots package to The Python Package Index)
