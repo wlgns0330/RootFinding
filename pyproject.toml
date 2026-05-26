@@ -3,7 +3,7 @@ name = "yroots"
 version = "0.1.0"
 description = "Numerical rootfinding for multivariate systems of equations"
 readme = "README.md"
-requires-python = ">=3.14t"
+requires-python = ">=3.14"
 dependencies = [
     "matplotlib",
     "mpmath",
