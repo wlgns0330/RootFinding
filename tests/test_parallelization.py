@@ -29,7 +29,7 @@ DEFAULT_TOL  = 10000 * EPS          # ~2.22e-12
 MAX_CPU        = 4
 PARALLEL_DEPTH = 2
 
-POLISHED_DIR = os.path.join(os.path.dirname(__file__), "../Polished_results")
+POLISHED_DIR = os.path.join(os.path.dirname(__file__), "./Polished_results")
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ POLISHED_DIR = os.path.join(os.path.dirname(__file__), "../Polished_results")
 # ---------------------------------------------------------------------------
 
 def load_polished(test_num):
-    """Load polished roots from ../Polished_results/polished_{test_num}.npy"""
+    """Load polished roots from ./Polished_results/polished_{test_num}.npy"""
     path = os.path.join(POLISHED_DIR, f"polished_{test_num}.npy")
     roots = np.load(path)
     if roots.ndim == 1:
