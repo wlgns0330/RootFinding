@@ -1,16 +1,16 @@
 [project]
 name = "yroots"
 version = "0.1.0"
-description = "Add your description here"
+description = "Numerical rootfinding for multivariate systems of equations"
 readme = "README.md"
 requires-python = ">=3.14t"
 dependencies = [
-    "matplotlib,
+    "matplotlib",
     "mpmath",
-    "numba",
-    "numpy",
-    "scipy",
-    "sympy",
+    "numba>=0.65.1",
+    "numpy>=2.4.4",
+    "scipy>=1.17.1",
+    "sympy>=1.12",
 ]
 
 [dependency-groups]

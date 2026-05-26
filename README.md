@@ -20,12 +20,12 @@ This project was supported in part by the National Science Foundation, grant num
 
 ### Requirements
 At least:
-* Python 3.10
-* Pip 21.1
-* Numpy 1.22.0
-* Numba 0.37.0
-* Scipy 1.10.0
-* Sympy 1.5.1
+* Python 3.14t
+* Pip 26.1
+* Numpy 2.4.4
+* Numba 0.65.1
+* Scipy 1.17.1
+* Sympy 1.12
 
 ## Installation
 
