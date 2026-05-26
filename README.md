@@ -29,7 +29,7 @@ This project was supported in part by the National Science Foundation, grant num
 
 ## Installation
 
-**With uv (recommended):**
+With uv (recommended):
 ```
 uv python install 3.14t
 uv pip install git+https://github.com/tylerjarvis/RootFinding.git
