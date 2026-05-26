@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest>=9.0.3",
 ]
+docs = [
+    "sphinx>=8.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["yroots"]
