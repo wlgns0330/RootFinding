@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "yroots"
 version = "0.1.0"
@@ -17,3 +21,6 @@ dependencies = [
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["yroots"]
