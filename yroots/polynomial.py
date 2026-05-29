@@ -1,3 +1,9 @@
+"""Coefficient-tensor polynomial types used throughout yroots.
+
+Defines :class:`MultiCheb` and :class:`MultiPower` (both subclasses of the
+:class:`Polynomial` base) for representing multivariate polynomials by their
+coefficient tensor, plus the small helpers used to evaluate them efficiently.
+"""
 import numpy as np
 from scipy.signal import convolve
 from numpy.polynomial import chebyshev as cheb
@@ -22,17 +28,17 @@ def slice_top(matrix_shape):
 
 def match_size(a,b):
     '''
-    Matches the shape of two matrixes.
+    Matches the shape of two matrices.
 
     Parameters
     ----------
     a, b : ndarray
-        Matrixes whose size is to be matched.
+        Matrices whose size is to be matched.
 
     Returns
     -------
     a, b : ndarray
-        Matrixes of equal size.
+        Matrices of equal size.
     '''
     new_shape = np.maximum(a.shape, b.shape)
 
@@ -45,6 +51,20 @@ def match_size(a,b):
 ############ Fast polynomial evaluation functions ############
 
 def polyval(x, cc):
+    '''Horner evaluation of a power-basis polynomial along the leading axis of ``cc``.
+
+    Parameters
+    ----------
+    x : numpy array
+        Points at which to evaluate.
+    cc : numpy array
+        Coefficient array whose first axis indexes the polynomial degree.
+
+    Returns
+    -------
+    numpy array
+        Polynomial values, with the leading degree axis consumed.
+    '''
     c0 = cc[-1]
     for i in range(2, len(cc) + 1):
         c0 = cc[-i] + c0*x
@@ -57,6 +77,20 @@ def polyval2(x, cc):
     return c0
 
 def chebval(x, cc):
+    '''Clenshaw evaluation of a Chebyshev-basis polynomial along the leading axis of ``cc``.
+
+    Parameters
+    ----------
+    x : numpy array
+        Points at which to evaluate.
+    cc : numpy array
+        Coefficient array whose first axis indexes the Chebyshev degree.
+
+    Returns
+    -------
+    numpy array
+        Polynomial values, with the leading degree axis consumed.
+    '''
     if len(cc) == 1:
         c0 = cc[0]
         c1 = np.zeros_like(c0)
@@ -124,8 +158,6 @@ class Polynomial(object):
     -------
     clean_coeff
         Removes extra rows, columns, etc of zeroes from end of matrix of coefficients
-    match_size
-        Matches the shape of two matrices.
     __call__
         Evaluates a polynomial at a certain point.
     __eq__
@@ -186,8 +218,10 @@ class Polynomial(object):
 
         Returns
         -------
-         : numpy array
-            valued of the polynomial at the given points
+        points : numpy array
+            The validated/reshaped input points. Subclasses (:class:`MultiCheb`,
+            :class:`MultiPower`) override :meth:`__call__` to return the polynomial values
+            themselves; the base implementation only normalizes the input.
         '''
         points = np.array(points)
         if points.ndim == 0:
@@ -256,11 +290,11 @@ class MultiCheb(Polynomial):
     Examples
     --------
 
-    To represent 4*T_2(x) + 1T_3(x) (using Chebyshev polynomials of the first kind):
+    To represent 4*T_2(x) + 1*T_3(x) (using Chebyshev polynomials of the first kind):
 
     >>> f = yroots.MultiCheb([0,0,4,1])
     >>> print(f)
-    [-4.   0.   5.5  0.   0.   0.   3. ]
+    [0. 0. 4. 1.]
 
 
     Parameters
@@ -353,17 +387,17 @@ class MultiCheb(Polynomial):
 
         Returns
         -------
-        values: complex
+        values : numpy array
             The polynomial evaluated at all of the points in the grid determined by
-            the axis values
+            the axis values. Returns a scalar when the grid contains a single point.
         '''
 
         xyz = super(MultiCheb, self).__call__(xyz)
 
         c = self.coeff
         for i in range(xyz.shape[1]):
-            cc = c.reshape(c.shape + (1,)*xyz[:,i].ndim)
-            c = chebval2(xyz[:,i] ,cc)
+            cc = c.reshape(c.shape + (1,)*xyz[:, i].ndim)
+            c = chebval2(xyz[:, i], cc)
 
         if np.product(c.shape)==1:
             return c[0]
@@ -511,8 +545,8 @@ class MultiPower(Polynomial):
 
         Returns
         -------
-        __call__: complex
-            value of the polynomial at the given point
+        c : numpy array
+            values of the polynomial at the given points
         '''
         points = super(MultiPower, self).__call__(points)
 
@@ -539,9 +573,9 @@ class MultiPower(Polynomial):
 
         Returns
         -------
-        values: complex
+        values : numpy array
             The polynomial evaluated at all of the points in the grid determined by
-            the axis values
+            the axis values. Returns a scalar when the grid contains a single point.
         '''
 
         xyz = super(MultiPower, self).__call__(xyz)

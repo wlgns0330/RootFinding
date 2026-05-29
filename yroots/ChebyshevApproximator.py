@@ -1,3 +1,10 @@
+"""Chebyshev approximation utilities used by :mod:`yroots.Combined_Solver`.
+
+Provides :func:`chebApproximate` (the public entry point) along with the
+helpers it relies on to choose a degree per dimension, evaluate on the
+Chebyshev grid via :func:`scipy.fftpack.dctn`, and estimate the approximation
+error.
+"""
 import numpy as np
 from numba import njit
 from yroots.polynomial import MultiCheb, MultiPower
@@ -35,12 +42,12 @@ def interval_approximate_nd(f, degs, a, b, retSupNorm = False):
     ----------
     f : function from R^n -> R
         The function to interpolate.
+    degs : list of ints
+        A list of the degree of interpolation in each dimension.
     a : numpy array
         The lower bound on the interval.
     b : numpy array
         The upper bound on the interval.
-    degs : list of ints
-        A list of the degree of interpolation in each dimension.
     retSupNorm : bool
         Whether to return the sup norm of the function.
 
@@ -144,6 +151,11 @@ def getFinalDegree(coeff,tol,macheps = 2**-52):
     ----------
     coeff : numpy array
         Absolute values of chebyshev coefficients.
+    tol : float
+        Tolerance below which a coefficient is treated as zero when deciding whether ``f`` is
+        effectively constant (in which case the returned degree is 0).
+    macheps : float
+        Machine epsilon used as the floor when computing ``epsVal``. Defaults to ``2**-52``.
     
     Returns
     -------
@@ -187,11 +199,16 @@ def checkConstantInDimension(f,a,b,currDim, relApproxTol, absApproxTol = 0):
         The upper bound on the interval.
     currDim : int
         The dimension being examined.
-    
+    relApproxTol : float
+        Relative tolerance passed to :func:`numpy.isclose`/:func:`numpy.allclose` when comparing
+        function evaluations to decide whether ``f`` varies along ``currDim``.
+    absApproxTol : float
+        Absolute tolerance passed to :func:`numpy.isclose`/:func:`numpy.allclose`. Defaults to 0.
+
     Returns
     -------
     is_constant : bool
-        Whether the dimension is constant in dimension currDim. Returns False if the test is
+        Whether ``f`` is constant in dimension ``currDim``. Returns False if the test is
         indeterminate or f is seen to vary with different values of x[dim]. Returns True otherwise.
     """
     if isinstance(f,MultiPower) or isinstance(f,MultiCheb): # Points evaluated differently for these
@@ -299,7 +316,7 @@ def getChebyshevDegrees(f, a, b, relApproxTol, absApproxTol = 0):
             coeff2, supNorm2 = interval_approximate_nd(f, degs, a, b, retSupNorm=True)
             tol = absApproxTol + max(supNorm, supNorm2) * relApproxTol
             if not hasConverged(coeff, coeff2, tol):
-                continue # Keed doubling if the coefficients have not fully converged.
+                continue # Keep doubling if the coefficients have not fully converged.
             
             # The coefficients have been shown to converge to 0. Get the exact degree where this occurs.
             coeffChunk = np.average(np.abs(coeff2), axis=tupleForChunk)
@@ -371,7 +388,7 @@ def chebApproximate(f, a, b, relApproxTol=1e-10):
     --------
 
     >>> f = lambda x,y,z: x**2 - y**2 + 3*x*y
-    >>> approx, error = yroots.approximate(f,[-1,-1,-1],[1,1,1])
+    >>> approx, error = yroots.chebApproximate(f,[-1,-1,-1],[1,1,1])
     >>> print(approx)
     [[[ 0.00000000e+00]
       [ 1.11022302e-16]
@@ -386,7 +403,7 @@ def chebApproximate(f, a, b, relApproxTol=1e-10):
     2.8014584982224306e-24
 
     >>> g = np.sqrt
-    >>> approx = yroots.approximate(g,[0],[5])[0]
+    >>> approx = yroots.chebApproximate(g,[0],[5])[0]
     >>> print(approx)
     [ 1.42352509e+00  9.49016725e-01 -1.89803345e-01 ... -1.24418041e-10
       1.24418045e-10 -6.22090244e-11]

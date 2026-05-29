@@ -1,3 +1,11 @@
+"""Chebyshev subdivision root solver.
+
+Implements the recursive solver invoked by :func:`yroots.Combined_Solver.solve`. The
+core entry point is :func:`solveChebyshevSubdivision`; the rest of the module
+provides the supporting primitives (linear-system bounding, transformation of
+Chebyshev coefficients, subdivision bookkeeping via :class:`TrackedInterval`,
+and an optional multilevel parallel driver).
+"""
 import numpy as np
 from numba import njit, float64
 from numba.types import UniTuple
@@ -7,13 +15,18 @@ from time import time
 import copy
 import warnings
 
-# Edit number 1
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
-# Edit Edit
 @dataclass
 class SolveTask:
+    """One unit of work for the multilevel parallel driver.
+
+    Holds the Chebyshev coefficient tensors, the :class:`TrackedInterval` they
+    are being solved on, the per-poly approximation error bounds, and the
+    bookkeeping (parent id, subdivision depth) needed to reassemble results
+    once child tasks finish.
+    """
     Ms: object
     trackedInterval: object
     errors: object
@@ -43,7 +56,6 @@ class TaskResult:
     exterior: list
     childTasks: list
     subdivisionState: SubdivisionState | None = None
-# End Edit
 
 class SolverOptions():
     """Settings for running interval checks, transformations, and subdivision in solvePolyRecursive.
@@ -64,7 +76,17 @@ class SolverOptions():
         Maximum number of zooms allowed before subdividing (prevents infinite infintesimal shrinking)
     level : int
         Depth of subdivision for the given interval.
+    max_cpu : int
+        Defaults to 1. Maximum number of worker processes the multilevel parallel driver may use.
+    allowParallel : bool
+        Defaults to True. Whether parallel dispatch is allowed for this solve. Workers flip this to
+        False on their copy of the options to prevent nested parallelism.
+    parallel_depth : float
+        Subdivision depth below which child tasks are pushed to the process pool. Tasks at or beyond
+        this depth solve their children serially in the worker, avoiding scheduling overhead on
+        tiny tasks. Defaults to ``np.inf`` (i.e. fully serial).
     """
+    
     def __init__(self):
         #Init all the Options to default value
         self.verbose = False
@@ -75,14 +97,9 @@ class SolverOptions():
         self.maxZoomCount = 25
         self.level = 0
 
-        # Edit number 2
-        # Parameters for parallelization
         self.max_cpu = 1
         self.allowParallel = True
-        # Subdivision depth below which child tasks are pushed to the process
-        # pool. Tasks at or beyond this depth solve their children serially in
-        # the worker, avoiding the scheduling overhead of tiny tasks.
-        self.parallel_depth = np.inf
+        self.parallel_depth = 0
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
@@ -423,28 +440,35 @@ class TrackedInterval:
 
     Parameters
     ----------
-    topInterval: numpy array
-        The original interval before any changes
-    interval: numpy array
-        The current interval (lower bound and upper bound for each dimension in order)
-    transforms: list
-        List of the alpha and beta values for all the transformations the interval has undergone
-    ndim: int
-        The number of dimensions of which the interval consists
-    empty: bool
-        Whether the interval is known to contain no roots
-    finalStep: bool
-        Whether the interval is in the final step (zooming in on the bounding box to a point at the end)
-    canThrowOutFinalStep: bool
+    interval : numpy array
+        The starting interval, shape ``(ndim, 2)`` with each row holding the lower and upper bound
+        for one dimension. Stored as both ``topInterval`` (the original) and ``interval`` (the
+        current, mutable bounds).
+
+    Attributes
+    ----------
+    topInterval : numpy array
+        The original interval before any changes.
+    interval : numpy array
+        The current interval (lower bound and upper bound for each dimension in order).
+    transforms : list
+        List of the alpha and beta values for all the transformations the interval has undergone.
+    ndim : int
+        The number of dimensions of which the interval consists.
+    empty : bool
+        Whether the interval is known to contain no roots.
+    finalStep : bool
+        Whether the interval is in the final step (zooming in on the bounding box to a point at the end).
+    canThrowOutFinalStep : bool
         Defaults to False. Whether or not the interval should be thrown out if empty in the final step
         of solving. Changed to True if subdivision occurs in the final step.
-    possibleDuplicateRoots: list
+    possibleDuplicateRoots : list
         Any multiple roots found through subdivision in the final step that would have been
-        returned as just one root before the final step
-    possibleExtraRoot: bool
+        returned as just one root before the final step.
+    possibleExtraRoot : bool
         Defaults to False. Whether or not the interval would have been thrown out during the final step.
-    nextTransformPoints: numpy array
-        Where the midpoint of the next subdivision should be for each dimension
+    nextTransformPoints : numpy array
+        Where the midpoint of the next subdivision should be for each dimension.
     """
     def __init__(self, interval):
         self.topInterval = interval
@@ -465,7 +489,7 @@ class TrackedInterval:
     def addTransform(self, subInterval):
         """Adds the next alpha and beta values to the list transforms and updates the current interval.
 
-        Parameters:
+        Parameters
         -----------
         subInterval : numpy array
             The subinterval to which the current interval is being reduced
@@ -681,17 +705,19 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
         The maximum error of chebyshev approximations
     finalStep : bool
         Whether we are in the final step of the algorithm
+    macheps : float
+        Machine epsilon used when bounding the linear system. Defaults to ``2**-52``.
 
     Returns
     -------
     newInterval : numpy array
-        The smaller interval where any root must be
+        The smaller interval where any root must be, shape ``(dim, 2)``.
     changed : bool
-        Whether the interval has shrunk at all
+        Whether the interval has shrunk at all.
     should_stop : bool
-        Whether we should stop subdividing
-    throwout :
-        Whether we should throw out the interval entirely
+                Whether we should stop subdividing.
+    throwout : bool
+        Whether the interval can be discarded entirely (no root is possible inside it).
     """
     if finalStep:
         errors = np.zeros_like(errors)
@@ -834,7 +860,7 @@ def TwoProd(a,b):
     y=a2*b2-(((x-a1*b1)-a2*b1)-a1*b2)
     return x,y
 def TwoProd_NoNumba(a,b):
-    """Returns x,y such that a*b=x+y exactly and a*b=x in floating point without usin numba."""
+    """Returns x,y such that a*b=x+y exactly and a*b=x in floating point without using numba."""
     x = a*b
     a1,a2 = Split_NoNumba(a)
     b1,b2 = Split_NoNumba(b)
@@ -1219,8 +1245,28 @@ def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
-# Edit Edit
 def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None, level=0):
+    """Bundle subdivided children into :class:`SolveTask` records for the parallel driver.
+
+    Parameters
+    ----------
+    allMs : iterable
+        One coefficient-tensor list per child interval.
+    allErrors : iterable
+        Per-poly error bounds, aligned with ``allMs``.
+    allIntervals : iterable of TrackedInterval
+        The child intervals produced by subdivision.
+    parent_id : int or None
+        Identifier of the parent interval whose results these children feed into. ``None`` for
+        top-level tasks.
+    level : int
+        Subdivision depth assigned to each child task.
+
+    Returns
+    -------
+    list of SolveTask
+        One task per child interval, ready to be queued.
+    """
     return [
         SolveTask(newMs, newInt, newErrs, parent_id=parent_id, level=level)
         for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals)
@@ -1418,10 +1464,30 @@ def finish_subdivision_state(state, childInterior, childExterior):
 
 
 def solvePolyParallelMultilevel(Ms, trackedInterval, errors, solverOptions):
-    """
-    Multilevel parallel driver.
+    """Multilevel parallel driver for the subdivision solver.
+    Submits :class:`SolveTask` units to a :class:`ThreadPoolExecutor` sized by
+    ``solverOptions.max_cpu``. Each worker solves one task until it either finishes or
+    subdivides; subdivided tasks come back with child tasks that are queued and joined to their
+    parent via :func:`finish_subdivision_state`. This is the only place where a process pool is
+    created — workers themselves run with ``allowParallel`` disabled to prevent nested pools.
 
-    This is the only place where a process pool is created.
+    Parameters
+    ----------
+    Ms : list of numpy arrays
+        Chebyshev coefficient tensors for the top-level interval.
+    trackedInterval : TrackedInterval
+        The interval to solve over.
+    errors : numpy array
+        Per-poly approximation error bounds.
+    solverOptions : SolverOptions
+        Options for the solve. ``max_cpu`` and ``parallel_depth`` are read here.
+
+    Returns
+    -------
+    finalInterior : list of TrackedInterval
+        Intervals strictly inside the original domain that contain a root.
+    finalExterior : list of TrackedInterval
+        Intervals on the boundary of the original domain that contain a root.
     """
     max_workers = max(1, solverOptions.max_cpu)
 
@@ -1824,7 +1890,7 @@ def solvePoly(Ms, trackedInterval, errors, solverOptions):
     )
 
 def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True,
-                              low_dim_quadratic_check = True,all_dim_quadratic_check = False, max_cpu=1, parallel_depth=1):
+                              low_dim_quadratic_check = True,all_dim_quadratic_check = False, max_cpu=1, parallel_depth=0):
     """Initiates shrinking and subdivision recursion and returns the roots and bounding boxes.
 
     Parameters
@@ -1845,13 +1911,21 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
         Defaults to True. Whether or not to run quadratic check in dim 2, 3.
     all_dim_quadratic_check : bool
         Defaults to False. Whether or not to run quadratic check in dim >= 4.
+    max_cpu : int
+        Defaults to 1. Maximum number of CPUs to use when dispatching subdivided regions to the
+        multilevel parallel driver. One CPU is reserved for the main thread, so the worker pool
+        is sized at ``max_cpu - 1``.
+    parallel_depth : int
+        Defaults to 0. Subdivision depth at which child tasks start being pushed to the worker
+        pool. Higher values keep work serial for longer before parallelizing.
 
     Returns
     -------
     roots : list
-        The roots of the system of functions on the interval given to Combined Solver
-    boundingBoxes : list of numpy arrays (optional)
-        List of intervals for each root in which the root is bound to lie.
+        The roots of the system of functions on the interval given to Combined Solver. Returned
+        alone when ``returnBoundingBoxes`` is False.
+    boundingBoxes : list of TrackedInterval
+        Only returned when ``returnBoundingBoxes`` is True. Bounding intervals for each root.
     """
     #Assert that we have n nD polys
     if np.any([M.ndim != len(Ms) for M in Ms]):
