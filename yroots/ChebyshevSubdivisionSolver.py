@@ -1289,15 +1289,13 @@ def finish_subdivision_state(state, childInterior, childExterior):
             else:
                 return [trackedInterval], []
 
-        # Combine all roots that converged to the same point.
-        allFoundRoots = set()
+        # Combine all roots that converged to the same point. Use interval overlap
+        # (not exact lower-bound match) so singular roots whose sub-intervals differ
+        # by floating-point noise still collapse to one.
         tempResults = []
-
         for result in resultsAll:
-            point = tuple(result.interval[:, 0])
-            if point in allFoundRoots:
+            if any(result.overlapsWith(kept) for kept in tempResults):
                 continue
-            allFoundRoots.add(point)
             tempResults.append(result)
 
         for result in tempResults:
@@ -1878,6 +1876,16 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     b1, b2 = solvePoly(Ms, originalInterval, errors, solverOptions)
 
     boundingIntervals = b1 + b2
+    # Dedup overlapping final bounding intervals. The in-recursion merge only compares
+    # siblings on resultExterior, so singular roots reached from multiple recursion
+    # branches survive as separate interior intervals. Overlapping final boxes cannot
+    # enclose distinct roots, so collapse them here.
+    dedupedIntervals = []
+    for interval in boundingIntervals:
+        if not any(interval.overlapsWith(kept) for kept in dedupedIntervals):
+            dedupedIntervals.append(interval)
+    boundingIntervals = dedupedIntervals
+    
     roots = []
     hasDupRoots = False
     hasExtraRoots = False
