@@ -11,7 +11,6 @@ from numba import njit, float64
 from numba.types import UniTuple
 from itertools import product
 from yroots.QuadraticCheck import quadratic_check
-from time import time
 import copy
 import warnings
 
@@ -81,10 +80,10 @@ class SolverOptions():
     allowParallel : bool
         Defaults to True. Whether parallel dispatch is allowed for this solve. Workers flip this to
         False on their copy of the options to prevent nested parallelism.
-    parallel_depth : float
+    parallel_depth : int
         Subdivision depth below which child tasks are pushed to the process pool. Tasks at or beyond
         this depth solve their children serially in the worker, avoiding scheduling overhead on
-        tiny tasks. Defaults to ``np.inf`` (i.e. fully serial).
+        tiny tasks. Defaults to 0 (i.e. fully serial).
     """
     
     def __init__(self):
@@ -280,7 +279,6 @@ def TransformChebInPlace1DErrorFree(coeffs, alpha, beta):
         transformedCoeffs[i] += thisCoeff * (arr3[i] + arr3E[i])
 
         #The last spot
-        #finalVal = alpha*arr2[i]
         finalVal, finalValE = TwoProdWithSplit(alpha, arr2[i], alpha1, alpha2)
         arr3E[maxRow] = finalValE + alpha * arr2E[i]
         arr3[maxRow] = finalVal
@@ -380,7 +378,6 @@ def TransformChebInPlace1DErrorFreeSplit(coeffs, betaSign):
         transformedCoeffs[i] += thisCoeff * (arr3[i] + arr3E[i])
 
         #The last spot
-        #finalVal = alpha*arr2[i]
         arr3[maxRow] = arr2[i]/2
         arr3E[maxRow] = arr2E[i] / 2
         transformedCoeffs[maxRow] += thisCoeff * (arr3[maxRow] + arr3E[maxRow])
@@ -1673,8 +1670,6 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
 
     lastSizes = trackedInterval.dimSize()
 
-    start_time = time()
-
     while changed and zoomCount <= solverOptions.maxZoomCount:
         Ms, errors, trackedInterval, changed, should_stop = zoomInOnIntervalIter(Ms,errors,trackedInterval,solverOptions.exact)
 
@@ -1689,8 +1684,6 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
             zoomCount += 1
 
         lastSizes = newSizes
-
-    finish_time = time()
 
     if should_stop:
         if trackedInterval.finalStep or not solverOptions.useFinalStep:

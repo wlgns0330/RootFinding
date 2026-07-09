@@ -5,7 +5,6 @@ import functools
 import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import yroots.ChebyshevApproximator as ChebyshevApproximator
 from yroots.polynomial import MultiCheb,MultiPower
-from time import time
 
 def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1,
           parallel_depth=1):
@@ -123,7 +122,6 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         betas = (b + a) / 2
 
     for i in range(dim):
-        # t = time()
         if isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
             errs[i] = macheps
@@ -136,7 +134,6 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         else:
             polys[i], errs[i] = ChebyshevApproximator.chebApproximate(funcs[i],a,b)
-        # return time() - t
         if verbose:
             print(f"{i}: {polys[i].shape}", end = " " if i != dim-1 else '\n')
     if verbose:

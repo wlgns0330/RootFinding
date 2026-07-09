@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath('../..'))  # points at repo root
 # -- Project information -----------------------------------------------------
 
 project = 'YRoots'
-copyright = '2023, BYU Math'
+copyright = '2023-2026, BYU Math'
 author = 'BYU Math'
 root_doc = "modules"
 

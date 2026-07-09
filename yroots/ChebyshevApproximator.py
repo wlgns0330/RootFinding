@@ -72,7 +72,6 @@ def interval_approximate_nd(f, degs, a, b, retSupNorm = False):
         #TODO: Evaluate Grid???
         values = f(cheb_pts).reshape(*(degs+1))
     else:
-        # values = f(*cheb_pts.T).reshape(*(degs+1))
         values = np.array([f(*cheb_pt) for cheb_pt in cheb_pts]).reshape(*(degs+1))
     #Get the supNorm if we want it
     if retSupNorm:
@@ -457,10 +456,6 @@ def chebApproximate(f, a, b, relApproxTol=1e-10):
             f(*[(u+l)/2 for l,u in zip(a,b)])
     except TypeError as e:
         raise ValueError("Invalid input: length of the upper/lower bound lists must match the dimension of the function")
-    
-    # # If the function is a MultiCheb object on [-1,1]^n, then return its matrix as the approximation
-    # if isinstance(f,MultiCheb) and np.allclose(a,-np.ones_like(a)) and np.allclose(b,np.ones_like(b)):
-    #     return f.coeff.astype(float), 0
     
     # Generate and return the approximation
     degs, epsilons, rhos = getChebyshevDegrees(f, a, b, relApproxTol)
