@@ -31,7 +31,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     Examples
     --------
 
-    >>> f = lambda x,y,z: 2*x**2 / (x**4-4) - 2*x**2 + .5
+    >>> f = lambda x,y,z: 2*x**2 / (x**4-4) - 2*y**2 + .5*z
     >>> g = lambda x,y,z: 2*x**2*y / (y**2+4) - 2*y + 2*x*z
     >>> h = lambda x,y,z: 2*z / (z**2-4) - 2*z
     >>> roots = yroots.solve([f, g, h], np.array([-0.5,0,-2**-2.44]), np.array([0.5,np.exp(1.1376),.8]))
@@ -50,42 +50,46 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     Parameters
     ----------
-    funcs: list
+    funcs : list
         List of functions for searching. NOTE: Valid input is restricted to callable Python functions
         (including user-created functions) and yroots Polynomial (MultiCheb and MultiPower) objects.
         String representations of functions are not valid input.
-    a: list or numpy array
+    a : list or numpy array
         An array containing the lower bound of the search interval in each dimension, listed in
         dimension order. If the lower bound is to be the same in each dimension, a single float input
         is also accepted. Defaults to -1 in each dimension if no input is given.
-    b: list or numpy array
+    b : list or numpy array
         An array containing the upper bound of the search interval in each dimension, listed in
         dimension order. If the upper bound is to be the same in each dimension, a single float input
         is also accepted. Defaults to 1 in each dimension if no input is given.
     verbose : bool
-        Defaults to False. Tracks progress of the approximation and rootfinding by outputting progress to
-        the terminal. Useful in tracking progress of systems of equations that take a long time to solve.
+        Defaults to False. When True, prints progress of approximation and rootfinding to the terminal.
+        Useful for long-running systems.
     returnBoundingBoxes : bool
         Defaults to False. Whether or not to return a precise bounding box for each root.
-    exact: bool
+    exact : bool
         Defaults to False. Whether transformations performed on the approximation should be performed
         with higher precision to minimize error.
-    minBoundingIntervalSize : double
+    minBoundingIntervalSize : float
         Defaults to 1e-5. If a root is found with a bounding interval of size > minBoundingIntervalSize in
         each dimension, the functions are solved again on the smaller interval. Setting too small could cause
         issues if the functions can't be evaluated accurately on points close together, and will increase solve
-        times. Should give more accurate roots when smaller. This number is absolute when the boudning interval in
+        times. Should give more accurate roots when smaller. This number is absolute when the bounding interval in
         question is in [-1,1], and relative otherwise. So if an interval has an endpoint of magnitude > 1, then
-        minBoundingIntervalSize is multipled by that value for that dimension.
+        minBoundingIntervalSize is multiplied by that value for that dimension.
     max_cpu : int
         Defaults to 1. Max number of allowed cpus when solving subdivided regions.
+    parallel_depth : int
+        Defaults to 1. Subdivision depth at which child tasks start being pushed to the worker
+        pool. Higher values keep work serial for longer before parallelizing.
 
     Returns
     -------
-    yroots : numpy array
-        A list of the roots of the system of functions on the interval.
-    boundingBoxes : numpy array (optional)
-        The exact intervals (boxes) in which each root is bound to lie.
+    roots : numpy array
+        The roots of the system of functions on the interval.
+    boundingBoxes : numpy array, optional
+        Only returned when ``returnBoundingBoxes`` is True. The exact intervals (boxes) in
+        which each root is bound to lie.
     """
     # Ensure input functions and upper/lower bounds are valid
     if type(funcs) != list and type(funcs) != np.ndarray:

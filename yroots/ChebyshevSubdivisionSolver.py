@@ -21,21 +21,22 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 class SolveTask:
     """One unit of work for the multilevel parallel driver.
 
-    Holds the Chebyshev coefficient tensors, the :class:`TrackedInterval` they
-    are being solved on, the per-poly approximation error bounds, and the
-    bookkeeping (parent id, subdivision depth) needed to reassemble results
-    once child tasks finish.
+    Holds the Chebyshev coefficient tensors, the :class:`TrackedInterval` they are being
+    solved on, the per-poly approximation error bounds, and the bookkeeping (parent id,
+    subdivision depth) needed to reassemble results once child tasks finish.
     """
     Ms: object
     trackedInterval: object
     errors: object
     parent_id: int | None = None
     level: int = 0
+
 @dataclass
 class SubdivisionState:
-    """
-    Stores the information needed to finish a parent interval
-    after all of its children have completed.
+    """Snapshot of a parent interval waiting on its children to finish.
+
+    Stores everything the driver needs to reconstruct and finalize the parent
+    once all child tasks have completed.
     """
     originalMs: object
     originalInterval: object
@@ -43,13 +44,13 @@ class SubdivisionState:
     errors: object
     solverOptions: object
     isFinalStep: bool
+
 @dataclass
 class TaskResult:
-    """
-    If childTasks is empty, this task is finished.
+    """Result of a single solve step.
 
-    If childTasks is nonempty, this task subdivided and needs the
-    driver to solve children before finishing the parent.
+    If ``childTasks`` is empty, this task is finished. Otherwise the task subdivided
+    and the driver must solve the children before finishing the parent.
     """
     interior: list
     exterior: list
@@ -72,7 +73,7 @@ class SolverOptions():
     all_dim_quadratic_check : bool
         Defaults to False. Whether or not to run quadratic check in dim >= 4.
     maxZoomCount : int
-        Maximum number of zooms allowed before subdividing (prevents infinite infintesimal shrinking)
+        Maximum number of zooms allowed before subdividing (prevents infinite infinitesimal shrinking).
     level : int
         Depth of subdivision for the given interval.
     max_cpu : int
@@ -1861,10 +1862,11 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
 
 
 def solvePoly(Ms, trackedInterval, errors, solverOptions):
-    """
-    Recommended public entry point.
+    """Dispatches to the parallel or recursive solver based on ``solverOptions``.
 
-    Call this instead of calling solvePolyRecursive directly.
+    Public entry point — call this instead of :func:`solvePolyRecursive` directly.
+    Routes to :func:`solvePolyParallelMultilevel` when both ``parallel_depth > 0`` and
+    ``max_cpu > 1``; otherwise falls back to serial :func:`solvePolyRecursive`.
     """
     if solverOptions.parallel_depth > 0 and solverOptions.max_cpu > 1:
         return solvePolyParallelMultilevel(
@@ -1894,10 +1896,10 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
         The max error of the chebyshev approximation from the function on the interval
     verbose : bool
         Defaults to False. Whether or not to output progress of solving to the terminal.
-    returnBoundingBoxes : bool (Optional)
+    returnBoundingBoxes : bool
         Defaults to False. If True, returns the bounding boxes around each root as well as the roots.
     exact : bool
-        Whether transformations should be done with higher precision to minimize error.
+        Defaults to False. Whether transformations should be done with higher precision to minimize error.
     constant_check : bool
         Defaults to True. Whether or not to run constant term check after each subdivision.
     low_dim_quadratic_check : bool

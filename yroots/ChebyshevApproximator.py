@@ -19,7 +19,7 @@ def transform(x, a, b):
     Parameters
     ----------
     x : numpy array
-        The points to be tranformed.
+        The points to be transformed.
     a : numpy array
         The lower bounds on the interval.
     b : numpy array
@@ -122,7 +122,7 @@ def hasConverged(coeff, coeff2, tol):
     coeff2 : numpy array
         Absolute values of chebyshev coefficients of degree 2n+1 approximation.
     tol : float
-        Tolerance (distance from zero) used to determine wheher the coefficients have converged.
+        Tolerance (distance from zero) used to determine whether the coefficients have converged.
     
     Returns
     -------
@@ -257,9 +257,9 @@ def getChebyshevDegrees(f, a, b, relApproxTol, absApproxTol = 0):
     b : numpy array
         The upper bound on the interval.
     relApproxTol : float
-        The relative tolerance (distance from zero) used to determine convergence
+        The relative tolerance (distance from zero) used to determine convergence.
     absApproxTol : float
-        The absolute tolerance (distance from zero) used to determine convergence
+        The absolute tolerance (distance from zero) used to determine convergence.
     
     Returns
     -------
@@ -414,10 +414,10 @@ def chebApproximate(f, a, b, relApproxTol=1e-10):
         The function to be approximated. NOTE: Valid input is restricted to callable Python functions
         (including user-created functions) and yroots Polynomial (MultiCheb and MultiPower) objects.
         String representations of functions are not valid input.
-    a: list or numpy array
+    a : list or numpy array
         An array containing the lower bound of the approximation interval in each dimension, listed in
-        dimension order
-    b: list or numpy array
+        dimension order.
+    b : list or numpy array
         An array containing the upper bound of the approximation interval in each dimension, listed in
         dimension order.
     relApproxTol : float
