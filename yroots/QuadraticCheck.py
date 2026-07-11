@@ -10,6 +10,7 @@ import numpy as np
 import itertools
 from scipy import linalg as la
 from math import fabs
+from numba import njit
 
 def get_fixed_vars(dim):
     """Used in quadratic_check_nd to iterate through the boundaries of the domain.
@@ -55,155 +56,101 @@ def quadratic_check(test_coeff, tol, nd_check=False):
     else:
         return quadratic_check_nd(test_coeff, tol)
 
+@njit
 def quadratic_check_2D(test_coeff, tol):
-    """2D specialization of :func:`quadratic_check`.
+    """One of subinterval_checks
 
-    Finds the min of the absolute value of the quadratic part and compares it to the sum of
-    the remaining terms. There can't be a root if ``min(extreme_values) > other_sum`` or if
-    ``max(extreme_values) < -other_sum``. Short-circuits as soon as one value below
-    ``other_sum`` and one value above ``-other_sum`` are found.
+    Finds the min of the absolute value of the quadratic part, and compares to the sum of the
+    rest of the terms. There can't be a root if min(extreme_values) > other_sum or if
+    max(extreme_values) < -other_sum. We can short circuit and finish
+    faster as soon as we find one value that is < other_sum and one value that > -other_sum.
 
     Parameters
     ----------
     test_coeff : numpy array
-        The coefficient matrix of the polynomial to check.
-    tol : float
-        The bound of the sup norm error of the Chebyshev approximation.
+        The coefficient matrix of the polynomial to check
+    tol: float
+        The bound of the sup norm error of the chebyshev approximation.
 
     Returns
     -------
-    bool
-        True if the polynomial is guaranteed to have no zero on the unit box, False otherwise.
+    True if the function is guaranteed to never be zero in the interval. False otherwise.
     """
-    if test_coeff.ndim != 2:
-        return False
-
-    #Define the interval
-    interval = [[-1, -1], [1, 1]]
-
-    #Get the coefficients of the quadratic part
-    #Need to account for when certain coefs are zero.
-    #Padding is slow, so check the shape instead.
-    c = [0]*6
+    # Get the coefficients of the quadratic part; default to 0 when out of range.
     shape = test_coeff.shape
-    c[0] = test_coeff[0,0]
-    if shape[0] > 1:
-        c[1] = test_coeff[1,0]
-    if shape[1] > 1:
-        c[2] = test_coeff[0,1]
-    if shape[0] > 2:
-        c[3] = test_coeff[2,0]
-    if shape[0] > 1 and shape[1] > 1:
-        c[4] = test_coeff[1,1]
-    if shape[1] > 2:
-        c[5] = test_coeff[0,2]
+    c0 = test_coeff[0, 0]
+    c1 = test_coeff[1, 0] if shape[0] > 1 else 0.0
+    c2 = test_coeff[0, 1] if shape[1] > 1 else 0.0
+    c3 = test_coeff[2, 0] if shape[0] > 2 else 0.0
+    c4 = test_coeff[1, 1] if (shape[0] > 1 and shape[1] > 1) else 0.0
+    c5 = test_coeff[0, 2] if shape[1] > 2 else 0.0
 
-    # The sum of the absolute values of the other coefs
-    # Note: Overhead for instantiating a NumPy array is too costly for
-    #  small arrays, so the second sum here is faster than using numpy
-    other_sum = np.sum(np.abs(test_coeff)) - sum([fabs(coeff) for coeff in c]) + tol
+    # Sum of absolute values of everything except the six low-degree terms.
+    other_sum = (np.sum(np.abs(test_coeff))
+                 - abs(c0) - abs(c1) - abs(c2) - abs(c3) - abs(c4) - abs(c5)
+                 + tol)
 
-    # Function for evaluating c0 + c1 T_1(x) + c2 T_1(y) +c3 T_2(x) + c4 T_1(x)T_1(y) + c5 T_2(y)
-    # Use the Horner form because it is much faster, also do any repeated computations in advance
-    k0 = c[0]-c[3]-c[5]
-    k3 = 2*c[3]
-    k5 = 2*c[5]
-    def eval_func(x,y):
-        return k0 + (c[1] + k3 * x + c[4] * y) * x  + (c[2] + k5 * y) * y
+    # Horner form of c0 + c1*T_1(x) + c2*T_1(y) + c3*T_2(x) + c4*T_1(x)*T_1(y) + c5*T_2(y).
+    k0 = c0 - c3 - c5
+    k3 = 2 * c3
+    k5 = 2 * c5
 
-    #The interior min
-    #Comes from solving dx, dy = 0
-    #Dx: 4c3x +  c4y = -c1    Matrix inverse is  [4c5  -c4]
-    #Dy:  c4x + 4c5y = -c2                       [-c4  4c3]
-    # This computation is the same for all subintevals, so do it first
-    det = 16 * c[3] * c[5] - c[4]**2
-    if det != 0:
-        int_x = (c[2] * c[4] - 4 * c[1] * c[5]) / det
-        int_y = (c[1] * c[4] - 4 * c[2] * c[3]) / det
-    else:                      # det is zero,
-        int_x = np.inf
-        int_y = np.inf
-        
-    min_satisfied, max_satisfied = False,False
-    #Check all the corners
-    eval = eval_func(interval[0][0], interval[0][1])
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
+    min_satisfied = False
+    max_satisfied = False
 
-    eval = eval_func(interval[1][0], interval[0][1])
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-
-    eval = eval_func(interval[0][0], interval[1][1])
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-
-    eval = eval_func(interval[1][0], interval[1][1])
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-
-    #Check the x constant boundaries
-    #The partial with respect to y is zero
-    #Dy:  c4x + 4c5y = -c2 =>   y = (-c2-c4x)/(4c5)
-    if c[5] != 0:
-        cc5 = 4 * c[5]
-        x = interval[0][0]
-        y = -(c[2] + c[4]*x)/cc5
-        if interval[0][1] < y < interval[1][1]:
-            eval = eval_func(x,y)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        x = interval[1][0]
-        y = -(c[2] + c[4]*x)/cc5
-        if interval[0][1] < y < interval[1][1]:
-            eval = eval_func(x,y)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
+    # Four corners.
+    for xs in (-1.0, 1.0):
+        for ys in (-1.0, 1.0):
+            e = k0 + (c1 + k3 * xs + c4 * ys) * xs + (c2 + k5 * ys) * ys
+            if e < other_sum:
+                min_satisfied = True
+            if e > -other_sum:
+                max_satisfied = True
             if min_satisfied and max_satisfied:
                 return False
 
-    #Check the y constant boundaries
-    #The partial with respect to x is zero
-    #Dx: 4c3x +  c4y = -c1  =>  x = (-c1-c4y)/(4c3)
-    if c[3] != 0:
-        cc3 = 4*c[3]
-        y = interval[0][1]
-        x = -(c[1] + c[4]*y)/cc3
-        if interval[0][0] < x < interval[1][0]:
-            eval = eval_func(x,y)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
+    # x-constant edges (dy=0 gives y = -(c2 + c4*x)/(4*c5)).
+    if c5 != 0.0:
+        cc5 = 4 * c5
+        for xs in (-1.0, 1.0):
+            ys = -(c2 + c4 * xs) / cc5
+            if -1.0 < ys < 1.0:
+                e = k0 + (c1 + k3 * xs + c4 * ys) * xs + (c2 + k5 * ys) * ys
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
+
+    # y-constant edges (dx=0 gives x = -(c1 + c4*y)/(4*c3)).
+    if c3 != 0.0:
+        cc3 = 4 * c3
+        for ys in (-1.0, 1.0):
+            xs = -(c1 + c4 * ys) / cc3
+            if -1.0 < xs < 1.0:
+                e = k0 + (c1 + k3 * xs + c4 * ys) * xs + (c2 + k5 * ys) * ys
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
+
+    # Interior extremum (only when the Hessian is non-singular).
+    det = 16 * c3 * c5 - c4 * c4
+    if det != 0.0:
+        int_x = (c2 * c4 - 4 * c1 * c5) / det
+        int_y = (c1 * c4 - 4 * c2 * c3) / det
+        if -1.0 < int_x < 1.0 and -1.0 < int_y < 1.0:
+            e = k0 + (c1 + k3 * int_x + c4 * int_y) * int_x + (c2 + k5 * int_y) * int_y
+            if e < other_sum:
+                min_satisfied = True
+            if e > -other_sum:
+                max_satisfied = True
             if min_satisfied and max_satisfied:
                 return False
 
-        y = interval[1][1]
-        x = -(c[1] + c[4]*y)/cc3
-        if interval[0][0] < x < interval[1][0]:
-            eval = eval_func(x,y)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-
-    #Check the interior value
-    if interval[0][0] < int_x < interval[1][0] and interval[0][1] < int_y < interval[1][1]:
-        eval = eval_func(int_x,int_y)
-        min_satisfied = min_satisfied or eval < other_sum
-        max_satisfied = max_satisfied or eval > -other_sum
-        if min_satisfied and max_satisfied:
-            return False
-
-    #No root possible
     return True
 
 def quadratic_check_3D(test_coeff, tol):
