@@ -153,342 +153,186 @@ def quadratic_check_2D(test_coeff, tol):
 
     return True
 
+@njit(cache=True)
 def quadratic_check_3D(test_coeff, tol):
-    """3D specialization of :func:`quadratic_check`.
+    """One of subinterval_checks
 
-    Finds the min of the absolute value of the quadratic part and compares it to the sum of
-    the remaining terms. There can't be a root if ``min(extreme_values) > other_sum`` or if
-    ``max(extreme_values) < -other_sum``. Short-circuits as soon as one value below
-    ``other_sum`` and one value above ``-other_sum`` are found.
+    Finds the min of the absolute value of the quadratic part, and compares to the sum of the
+    rest of the terms.  There can't be a root if min(extreme_values) > other_sum or if
+    max(extreme_values) < -other_sum. We can short circuit and finish
+    faster as soon as we find one value that is < other_sum and one value that > -other_sum.
 
     Parameters
     ----------
     test_coeff : numpy array
-        The coefficient matrix of the polynomial to check.
-    tol : float
-        The bound of the sup norm error of the Chebyshev approximation.
+        The coefficient matrix of the polynomial to check
+    tol: float
+        The bound of the sup norm error of the chebyshev approximation.
 
     Returns
     -------
     bool
-        True if the polynomial is guaranteed to have no zero on the unit box, False otherwise.
+        True if the function is guaranteed to never be zero in the unit box, False otherwise.
     """
-    if test_coeff.ndim != 3:
-        return False
-
-    #Padding is slow, so check the shape instead.
-    c = [0]*10
     shape = test_coeff.shape
-    c[0] = test_coeff[0,0,0]
-    if shape[0] > 1:
-        c[1] = test_coeff[1,0,0]
-    if shape[1] > 1:
-        c[2] = test_coeff[0,1,0]
-    if shape[2] > 1:
-        c[3] = test_coeff[0,0,1]
-    if shape[0] > 1 and shape[1] > 1:
-        c[4] = test_coeff[1,1,0]
-    if shape[0] > 1 and shape[2] > 1:
-        c[5] = test_coeff[1,0,1]
-    if shape[1] > 1 and shape[2] > 1:
-        c[6] = test_coeff[0,1,1]
-    if shape[0] > 2:
-        c[7] = test_coeff[2,0,0]
-    if shape[1] > 2:
-        c[8] = test_coeff[0,2,0]
-    if shape[2] > 2:
-        c[9] = test_coeff[0,0,2]
+    c0 = test_coeff[0, 0, 0]
+    c1 = test_coeff[1, 0, 0] if shape[0] > 1 else 0.0
+    c2 = test_coeff[0, 1, 0] if shape[1] > 1 else 0.0
+    c3 = test_coeff[0, 0, 1] if shape[2] > 1 else 0.0
+    c4 = test_coeff[1, 1, 0] if (shape[0] > 1 and shape[1] > 1) else 0.0
+    c5 = test_coeff[1, 0, 1] if (shape[0] > 1 and shape[2] > 1) else 0.0
+    c6 = test_coeff[0, 1, 1] if (shape[1] > 1 and shape[2] > 1) else 0.0
+    c7 = test_coeff[2, 0, 0] if shape[0] > 2 else 0.0
+    c8 = test_coeff[0, 2, 0] if shape[1] > 2 else 0.0
+    c9 = test_coeff[0, 0, 2] if shape[2] > 2 else 0.0
 
-    #The sum of the absolute values of everything else
-    other_sum = np.sum(np.abs(test_coeff)) - sum([fabs(coeff) for coeff in c]) + tol
+    other_sum = (np.sum(np.abs(test_coeff))
+                 - abs(c0) - abs(c1) - abs(c2) - abs(c3) - abs(c4)
+                 - abs(c5) - abs(c6) - abs(c7) - abs(c8) - abs(c9)
+                 + tol)
 
-    #function for evaluating c0 + c1x + c2y +c3z + c4xy + c5xz + c6yz + c7T_2(x) + c8T_2(y) + c9T_2(z)
-    # Use the Horner form because it is much faster, also do any repeated computatons in advance
-    k0 = c[0]-c[7]-c[8]-c[9]
-    k7 = 2*c[7]
-    k8 = 2*c[8]
-    k9 = 2*c[9]
-    def eval_func(x,y,z):
-        return k0 + (c[1] + k7 * x + c[4] * y + c[5] * z) * x + \
-                    (c[2] + k8 * y + c[6] * z) * y + \
-                    (c[3] + k9 * z) * z
+    # Horner form of c0 + c1*x + c2*y + c3*z + c4*xy + c5*xz + c6*yz
+    #                + c7*T_2(x) + c8*T_2(y) + c9*T_2(z).
+    k0 = c0 - c7 - c8 - c9
+    k7 = 2 * c7
+    k8 = 2 * c8
+    k9 = 2 * c9
+    kk7 = 2 * k7   # 4*c7
+    kk8 = 2 * k8   # 4*c8
+    kk9 = 2 * k9   # 4*c9
 
-    #The interior min
-    #Comes from solving dx, dy, dz = 0
-    #Dx: 4c7x +  c4y +  c5z = -c1    Matrix inverse is  [(16c8c9-c6^2) -(4c4c9-c5c6)  (c4c6-4c5c8)]
-    #Dy:  c4x + 4c8y +  c6z = -c2                       [-(4c4c9-c5c6) (16c7c9-c5^2) -(4c6c7-c4c5)]
-    #Dz:  c5x +  c6y + 4c9z = -c3                       [(c4c6-4c5c8)  -(4c6c7-c4c5) (16c7c8-c4^2)]
-    #These computations are the same for all subintevals, so do them first
-    kk7 = 2*k7 #4c7
-    kk8 = 2*k8 #4c8
-    kk9 = 2*k9 #4c9
-    fix_x_det = kk8*kk9-c[6]**2
-    fix_y_det = kk7*kk9-c[5]**2
-    fix_z_det = kk7*kk8-c[4]**2
-    minor_1_2 = kk9*c[4]-c[5]*c[6]
-    minor_1_3 = c[4]*c[6]-kk8*c[5]
-    minor_2_3 = kk7*c[6]-c[4]*c[5]
-    det = 4*c[7]*fix_x_det - c[4]*minor_1_2 + c[5]*minor_1_3
-    if det != 0:
-        int_x = (c[1]*-fix_x_det + c[2]*minor_1_2  + c[3]*-minor_1_3)/det
-        int_y = (c[1]*minor_1_2  + c[2]*-fix_y_det + c[3]*minor_2_3)/det
-        int_z = (c[1]*-minor_1_3  + c[2]*minor_2_3  + c[3]*-fix_z_det)/det
-    else:
-        int_x = np.inf
-        int_y = np.inf
-        int_z = np.inf
+    def eval_func(x, y, z):
+        return (k0
+                + (c1 + k7 * x + c4 * y + c5 * z) * x
+                + (c2 + k8 * y + c6 * z) * y
+                + (c3 + k9 * z) * z)
 
-    interval = [[-1, -1, -1], [1, 1, 1]]
-    #easier names for each value...
-    x0 = interval[0][0]
-    x1 = interval[1][0]
-    y0 = interval[0][1]
-    y1 = interval[1][1]
-    z0 = interval[0][2]
-    z1 = interval[1][2]
+    min_satisfied = False
+    max_satisfied = False
 
-    min_satisfied, max_satisfied = False,False
-    #Check all the corners
-    eval = eval_func(x0, y0, z0)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x1, y0, z0)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x0, y1, z0)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x0, y0, z1)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x1, y1, z0)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x1, y0, z1)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x0, y1, z1)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    eval = eval_func(x1, y1, z1)
-    min_satisfied = min_satisfied or eval < other_sum
-    max_satisfied = max_satisfied or eval > -other_sum
-    if min_satisfied and max_satisfied:
-        return False
-    #Adds the x and y constant boundaries
-    #The partial with respect to z is zero
-    #Dz:  c5x +  c6y + 4c9z = -c3   => z=(-c3-c5x-c6y)/(4c9)
-    if c[9] != 0:
-        c5x0_c3 = c[5]*x0 + c[3]
-        c6y0 = c[6]*y0
-        z = -(c5x0_c3+c6y0)/kk9
-        if z0 < z < z1:
-            eval = eval_func(x0,y0,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c6y1 = c[6]*y1
-        z = -(c5x0_c3+c6y1)/kk9
-        if z0 < z < z1:
-            eval = eval_func(x0,y1,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c5x1_c3 = c[5]*x1 + c[3]
-        z = -(c5x1_c3+c6y0)/kk9
-        if z0 < z < z1:
-            eval = eval_func(x1,y0,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        z = -(c5x1_c3+c6y1)/kk9
-        if z0 < z < z1:
-            eval = eval_func(x1,y1,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
+    # 8 corners.
+    for xs in (-1.0, 1.0):
+        for ys in (-1.0, 1.0):
+            for zs in (-1.0, 1.0):
+                e = eval_func(xs, ys, zs)
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
 
-    #Adds the x and z constant boundaries
-    #The partial with respect to y is zero
-    #Dy:  c4x + 4c8y + c6z = -c2   => y=(-c2-c4x-c6z)/(4c8)
-    if c[8] != 0:
-        c6z0 = c[6]*z0
-        c2_c4x0 = c[2]+c[4]*x0
-        y = -(c2_c4x0+c6z0)/kk8
-        if y0 < y < y1:
-            eval = eval_func(x0,y,z0)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c6z1 = c[6]*z1
-        y = -(c2_c4x0+c6z1)/kk8
-        if y0 < y < y1:
-            eval = eval_func(x0,y,z1)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c2_c4x1 = c[2]+c[4]*x1
-        y = -(c2_c4x1+c6z0)/kk8
-        if y0 < y < y1:
-            eval = eval_func(x1,y,z0)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        y = -(c2_c4x1+c6z1)/kk8
-        if y0 < y < y1:
-            eval = eval_func(x1,y,z1)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
+    # Edges: two coordinates fixed, one free.
+    # (x,y) fixed, dz=0 gives z = -(c3 + c5*x + c6*y)/(4*c9).
+    if c9 != 0.0:
+        for xs in (-1.0, 1.0):
+            for ys in (-1.0, 1.0):
+                zs = -(c3 + c5 * xs + c6 * ys) / kk9
+                if -1.0 < zs < 1.0:
+                    e = eval_func(xs, ys, zs)
+                    if e < other_sum:
+                        min_satisfied = True
+                    if e > -other_sum:
+                        max_satisfied = True
+                    if min_satisfied and max_satisfied:
+                        return False
+
+    # (x,z) fixed, dy=0 gives y = -(c2 + c4*x + c6*z)/(4*c8).
+    if c8 != 0.0:
+        for xs in (-1.0, 1.0):
+            for zs in (-1.0, 1.0):
+                ys = -(c2 + c4 * xs + c6 * zs) / kk8
+                if -1.0 < ys < 1.0:
+                    e = eval_func(xs, ys, zs)
+                    if e < other_sum:
+                        min_satisfied = True
+                    if e > -other_sum:
+                        max_satisfied = True
+                    if min_satisfied and max_satisfied:
+                        return False
+
+    # (y,z) fixed, dx=0 gives x = -(c1 + c4*y + c5*z)/(4*c7).
+    if c7 != 0.0:
+        for ys in (-1.0, 1.0):
+            for zs in (-1.0, 1.0):
+                xs = -(c1 + c4 * ys + c5 * zs) / kk7
+                if -1.0 < xs < 1.0:
+                    e = eval_func(xs, ys, zs)
+                    if e < other_sum:
+                        min_satisfied = True
+                    if e > -other_sum:
+                        max_satisfied = True
+                    if min_satisfied and max_satisfied:
+                        return False
+
+    # Faces: one coordinate fixed, two free (2x2 solve on each face).
+    fix_x_det = kk8 * kk9 - c6 * c6
+    fix_y_det = kk7 * kk9 - c5 * c5
+    fix_z_det = kk7 * kk8 - c4 * c4
+
+    if fix_x_det != 0.0:
+        for xs in (-1.0, 1.0):
+            rhs2 = c2 + c4 * xs
+            rhs3 = c3 + c5 * xs
+            ys = (-kk9 * rhs2 + c6 * rhs3) / fix_x_det
+            zs = (c6 * rhs2 - kk8 * rhs3) / fix_x_det
+            if -1.0 < ys < 1.0 and -1.0 < zs < 1.0:
+                e = eval_func(xs, ys, zs)
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
+
+    if fix_y_det != 0.0:
+        for ys in (-1.0, 1.0):
+            rhs1 = c1 + c4 * ys
+            rhs3 = c3 + c6 * ys
+            xs = (-kk9 * rhs1 + c5 * rhs3) / fix_y_det
+            zs = (c5 * rhs1 - kk7 * rhs3) / fix_y_det
+            if -1.0 < xs < 1.0 and -1.0 < zs < 1.0:
+                e = eval_func(xs, ys, zs)
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
+
+    if fix_z_det != 0.0:
+        for zs in (-1.0, 1.0):
+            rhs1 = c1 + c5 * zs
+            rhs2 = c2 + c6 * zs
+            xs = (-kk8 * rhs1 + c4 * rhs2) / fix_z_det
+            ys = (c4 * rhs1 - kk7 * rhs2) / fix_z_det
+            if -1.0 < xs < 1.0 and -1.0 < ys < 1.0:
+                e = eval_func(xs, ys, zs)
+                if e < other_sum:
+                    min_satisfied = True
+                if e > -other_sum:
+                    max_satisfied = True
+                if min_satisfied and max_satisfied:
+                    return False
+
+    # Interior extremum (only when the Hessian is non-singular).
+    minor_1_2 = kk9 * c4 - c5 * c6
+    minor_1_3 = c4 * c6 - kk8 * c5
+    minor_2_3 = kk7 * c6 - c4 * c5
+    det = 4 * c7 * fix_x_det - c4 * minor_1_2 + c5 * minor_1_3
+    if det != 0.0:
+        int_x = (c1 * -fix_x_det + c2 * minor_1_2 + c3 * -minor_1_3) / det
+        int_y = (c1 * minor_1_2 + c2 * -fix_y_det + c3 * minor_2_3) / det
+        int_z = (c1 * -minor_1_3 + c2 * minor_2_3 + c3 * -fix_z_det) / det
+        if -1.0 < int_x < 1.0 and -1.0 < int_y < 1.0 and -1.0 < int_z < 1.0:
+            e = eval_func(int_x, int_y, int_z)
+            if e < other_sum:
+                min_satisfied = True
+            if e > -other_sum:
+                max_satisfied = True
             if min_satisfied and max_satisfied:
                 return False
 
-    #Adds the y and z constant boundaries
-    #The partial with respect to x is zero
-    #Dx: 4c7x +  c4y +  c5z = -c1   => x=(-c1-c4y-c5z)/(4c7)
-    if c[7] != 0:
-        c1_c4y0 = c[1]+c[4]*y0
-        c5z0 = c[5]*z0
-        x = -(c1_c4y0+c5z0)/kk7
-        if x0 < x < x1:
-            eval = eval_func(x,y0,z0)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c5z1 = c[5]*z1
-        x = -(c1_c4y0+c5z1)/kk7
-        if x0 < x < x1:
-            eval = eval_func(x,y0,z1)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c1_c4y1 = c[1]+c[4]*y1
-        x = -(c1_c4y1+c5z0)/kk7
-        if x0 < x < x1:
-            eval = eval_func(x,y1,z0)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        x = -(c1_c4y1+c5z1)/kk7
-        if x0 < x < x1:
-            eval = eval_func(x,y1,z1)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-
-    #Add the x constant boundaries
-    #The partials with respect to y and z are zero
-    #Dy:  4c8y +  c6z = -c2 - c4x    Matrix inverse is [4c9  -c6]
-    #Dz:   c6y + 4c9z = -c3 - c5x                      [-c6  4c8]
-    if fix_x_det != 0:
-        c2_c4x0 = c[2]+c[4]*x0
-        c3_c5x0 = c[3]+c[5]*x0
-        y = (-kk9*c2_c4x0 +   c[6]*c3_c5x0)/fix_x_det
-        z = (c[6]*c2_c4x0 -    kk8*c3_c5x0)/fix_x_det
-        if y0 < y < y1 and z0 < z < z1:
-            eval = eval_func(x0,y,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c2_c4x1 = c[2]+c[4]*x1
-        c3_c5x1 = c[3]+c[5]*x1
-        y = (-kk9*c2_c4x1 +   c[6]*c3_c5x1)/fix_x_det
-        z = (c[6]*c2_c4x1 -    kk8*c3_c5x1)/fix_x_det
-        if y0 < y < y1 and z0 < z < z1:
-            eval = eval_func(x1,y,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-
-    #Add the y constant boundaries
-    #The partials with respect to x and z are zero
-    #Dx: 4c7x +  c5z = -c1 - c40    Matrix inverse is [4c9  -c5]
-    #Dz:  c5x + 4c9z = -c3 - c6y                      [-c5  4c7]
-    if fix_y_det != 0:
-        c1_c4y0 = c[1]+c[4]*y0
-        c3_c6y0 = c[3]+c[6]*y0
-        x = (-kk9*c1_c4y0 +   c[5]*c3_c6y0)/fix_y_det
-        z = (c[5]*c1_c4y0 -    kk7*c3_c6y0)/fix_y_det
-        if x0 < x < x1 and z0 < z < z1:
-            eval = eval_func(x,y0,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c1_c4y1 = c[1]+c[4]*y1
-        c3_c6y1 = c[3]+c[6]*y1
-        x = (-kk9*c1_c4y1 +   c[5]*c3_c6y1)/fix_y_det
-        z = (c[5]*c1_c4y1 -    kk7*c3_c6y1)/fix_y_det
-        if x0 < x < x1 and z0 < z < z1:
-            eval = eval_func(x,y1,z)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-
-    #Add the z constant boundaries
-    #The partials with respect to x and y are zero
-    #Dx: 4c7x +  c4y  = -c1 - c5z    Matrix inverse is [4c8  -c4]
-    #Dy:  c4x + 4c8y  = -c2 - c6z                      [-c4  4c7]
-    if fix_z_det != 0:
-        c1_c5z0 = c[1]+c[5]*z0
-        c2_c6z0 = c[2]+c[6]*z0
-        x = (-kk8*c1_c5z0 +   c[4]*c2_c6z0)/fix_z_det
-        y = (c[4]*c1_c5z0 -    kk7*c2_c6z0)/fix_z_det
-        if x0 < x < x1 and y0 < y < y1:
-            eval = eval_func(x,y,z0)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-        c1_c5z1 = c[1]+c[5]*z1
-        c2_c6z1 = c[2]+c[6]*z1
-        x = (-kk8*c1_c5z1 +   c[4]*c2_c6z1)/fix_z_det
-        y = (c[4]*c1_c5z1 -    kk7*c2_c6z1)/fix_z_det
-        if x0 < x < x1 and y0 < y < y1:
-            eval = eval_func(x,y,z1)
-            min_satisfied = min_satisfied or eval < other_sum
-            max_satisfied = max_satisfied or eval > -other_sum
-            if min_satisfied and max_satisfied:
-                return False
-
-    #Add the interior value
-    if x0 < int_x < x1 and y0 < int_y < y1 and\
-            z0 < int_z < z1:
-        eval = eval_func(int_x,int_y,int_z)
-        min_satisfied = min_satisfied or eval < other_sum
-        max_satisfied = max_satisfied or eval > -other_sum
-        if min_satisfied and max_satisfied:
-            return False
-
-    # No root possible
-    return True
 
 def quadratic_check_nd(test_coeff, tol):
     """N-dimensional specialization of :func:`quadratic_check`.

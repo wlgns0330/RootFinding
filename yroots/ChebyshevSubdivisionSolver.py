@@ -17,6 +17,10 @@ import warnings
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
+# =============================================================================
+#                              Solver-side data types
+# =============================================================================
+
 @dataclass
 class SolveTask:
     """One unit of work for the multilevel parallel driver.
@@ -103,6 +107,10 @@ class SolverOptions():
 
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
+
+# =============================================================================
+#                       Chebyshev coordinate transformations
+# =============================================================================
 
 @njit
 def TransformChebInPlace1D(coeffs, alpha, beta):
@@ -433,6 +441,10 @@ def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
         backOrder[order] = np.arange(coeffs.ndim)
         return TransformFunc(coeffs.transpose(order), alpha, beta).transpose(backOrder)
 
+# =============================================================================
+#                           TrackedInterval bookkeeping
+# =============================================================================
+
 class TrackedInterval:
     """Tracks the properties of and changes to each interval as it passes through the solver.
 
@@ -641,6 +653,10 @@ class TrackedInterval:
 
     def __str__(self):
         return str(self.interval)
+    
+# =============================================================================
+#                            Linear-system bounding
+# =============================================================================
 
 def getLinearTerms(M):
     """Gets the linear terms of the Chebyshev coefficient tensor M.
@@ -821,6 +837,10 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
             #so return the original interval with changed = False and is_done = wellConditioned
             return np.vstack([a_orig,b_orig]).T, False, wellConditioned or forceShouldStop, False
 
+# =============================================================================
+#                        Error-free arithmetic primitives
+# =============================================================================
+
 @njit(UniTuple(float64,2)(float64, float64))
 def TwoSum(a,b):
     """Returns x,y such that a+b=x+y exactly, and a+b=x in floating point using numba."""
@@ -872,6 +892,10 @@ def TwoProdWithSplit(a,b,a1,a2):
     b1,b2 = Split(b)
     y=a2*b2-(((x-a1*b1)-a2*b1)-a1*b2)
     return x,y
+
+# =============================================================================
+#                        Chebyshev interval transformations
+# =============================================================================
 
 def getTransformPoints(newInterval):
     """Gets the alpha and beta points needed to transform the current interval to newInterval."""
@@ -1046,6 +1070,10 @@ def chebTransform1D(M, alpha, beta, transformDim, exact):
         The Chebyshev coefficient matrix transformed to the new interval in dimension transformDim
     """
     return TransformChebInPlaceND(M, transformDim, alpha, beta, exact)
+
+# =============================================================================
+#                             Subdivision operations
+# =============================================================================
 
 def getInverseOrder(order):
     """Gets a particular order of matrices needed in getSubdivisionIntervals (helper function).
@@ -1269,6 +1297,10 @@ def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None, level=0):
         SolveTask(newMs, newInt, newErrs, parent_id=parent_id, level=level)
         for newMs, newErrs, newInt in zip(allMs, allErrors, allIntervals)
     ]
+
+# =============================================================================
+#                               Solver drivers
+# =============================================================================
 
 def solvePolySequential(Ms, trackedInterval, errors, solverOptions):
     """
@@ -1883,6 +1915,10 @@ def solvePoly(Ms, trackedInterval, errors, solverOptions):
         solverOptions,
         returnChildren=False
     )
+
+# =============================================================================
+#                              Public entry point
+# =============================================================================
 
 def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes = False, exact = False, constant_check = True,
                               low_dim_quadratic_check = True,all_dim_quadratic_check = False, max_cpu=1, parallel_depth=0):
