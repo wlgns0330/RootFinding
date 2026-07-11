@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: github-pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -42,15 +42,19 @@ jobs:
         run: uv run sphinx-build -W docs/source docs/_build/html
 
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v4
         with:
           path: docs/_build/html
 
   deploy:
-    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+
+    # Deploy pushes, manual runs, and PRs created from branches in this repository.
+    # Do not deploy untrusted pull requests from forks.
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
 
     permissions:
       pages: write
@@ -63,4 +67,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@v4
