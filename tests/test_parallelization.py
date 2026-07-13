@@ -29,6 +29,18 @@ DEFAULT_TOL  = 10000 * EPS          # ~2.22e-12
 MAX_CPU        = 4
 PARALLEL_DEPTH = 2
 
+# Test cases whose parallel run is expected to be measurably faster than serial.
+# Small cases (linear systems, few roots) are dominated by fixed overhead and are
+# not required to speed up.
+HEAVY_CASE_IDS = {"2.4", "2.5", "3.2", "4.2"}
+MIN_HEAVY_SPEEDUP = 1.5
+
+# Case used for the parallel-determinism stress test. Chosen for having many
+# roots and wide subdivision, so the parallel driver actually exercises the
+# scheduling paths (a case that solves without subdividing tells us nothing).
+DETERMINISM_CASE_ID = "2.5"
+DETERMINISM_ITERATIONS = 20
+
 POLISHED_DIR = os.path.join(os.path.dirname(__file__), "./Polished_results")
 
 
@@ -93,25 +105,25 @@ TEST_CASES = [
         a_max = [ 1,  1],
         tol   = DEFAULT_TOL,
     ),
-    # dict(
-    #     id    = "1.2",
-    #     desc  = "Test 1.2 – degree-10 system, 13 roots",
-    #     f     = lambda x, y: (
-    #                 (y**2 - x**3) *
-    #                 ((y - 0.7)**2 - (x - 0.3)**3) *
-    #                 ((y + 0.2)**2 - (x + 0.8)**3) *
-    #                 ((y + 0.2)**2 - (x - 0.8)**3)
-    #             ),
-    #     g     = lambda x, y: (
-    #                 ((y + .4)**3  - (x - .4)**2) *
-    #                 ((y + .3)**3  - (x - .3)**2) *
-    #                 ((y - .5)**3  - (x + .6)**2) *
-    #                 ((y + 0.3)**3 - (2*x - 0.8)**3)
-    #             ),
-    #     a_min = [-1, -1],
-    #     a_max = [ 1,  1],
-    #     tol   = 2.220446049250313e-10,
-    # ),
+    dict(
+        id    = "1.2",
+        desc  = "Test 1.2 – degree-10 system, 13 roots",
+        f     = lambda x, y: (
+                    (y**2 - x**3) *
+                    ((y - 0.7)**2 - (x - 0.3)**3) *
+                    ((y + 0.2)**2 - (x + 0.8)**3) *
+                    ((y + 0.2)**2 - (x - 0.8)**3)
+                ),
+        g     = lambda x, y: (
+                    ((y + .4)**3  - (x - .4)**2) *
+                    ((y + .3)**3  - (x - .3)**2) *
+                    ((y - .5)**3  - (x + .6)**2) *
+                    ((y + 0.3)**3 - (2*x - 0.8)**3)
+                ),
+        a_min = [-1, -1],
+        a_max = [ 1,  1],
+        tol   = 2.220446049250313e-10,
+    ),
     dict(
         id    = "1.3",
         desc  = "Test 1.3 – cusp system, 5 roots",
@@ -428,6 +440,10 @@ class TestSerialVsParallel:
     def test_speedup(self, test_case, capsys):
         tc = test_case
 
+        # Warm Numba JIT so the first timed call isn't dominated by compile time.
+        run_serial(tc)
+        run_parallel(tc)
+
         t0 = time.perf_counter()
         serial = np.atleast_2d(run_serial(tc))
         t_serial = time.perf_counter() - t0
@@ -444,4 +460,64 @@ class TestSerialVsParallel:
                 f"serial={t_serial:.3f}s  parallel={t_parallel:.3f}s  "
                 f"speedup={speedup:.2f}x  "
                 f"(roots: {len(serial)} vs {len(parallel)})"
+            )
+
+        # Gate CI on speedup regressions for cases heavy enough that fixed
+        # overhead isn't the dominant term. Devs on single-core boxes can set
+        # YROOTS_SKIP_SPEEDUP_ASSERT=1 to keep the print but skip the assert.
+        if (
+            tc["id"] in HEAVY_CASE_IDS
+            and not os.environ.get("YROOTS_SKIP_SPEEDUP_ASSERT")
+        ):
+            assert speedup >= MIN_HEAVY_SPEEDUP, (
+                f"{tc['desc']}: parallel speedup {speedup:.2f}x is below the "
+                f"regression threshold {MIN_HEAVY_SPEEDUP}x "
+                f"(serial={t_serial:.3f}s, parallel={t_parallel:.3f}s)."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Concurrent determinism stress test
+# ---------------------------------------------------------------------------
+
+class TestParallelDeterminism:
+    """
+    Repeatedly running the same solve under the parallel driver must produce
+    the same root set every time. Different worker-completion orders change
+    the sequence in which subdivided regions are queued, so if any of that
+    ordering leaked into the results this test would flake.
+    """
+
+    def test_repeated_parallel_solves_agree(self, capsys):
+        tc = next(t for t in TEST_CASES if t["id"] == DETERMINISM_CASE_ID)
+
+        baseline = None
+        for i in range(DETERMINISM_ITERATIONS):
+            try:
+                roots = np.atleast_2d(run_parallel(tc))
+            except RecursionError:
+                pytest.fail(
+                    f"{tc['desc']}: parallel solve() hit maximum recursion "
+                    f"depth on iteration {i}."
+                )
+
+            if baseline is None:
+                baseline = roots
+                continue
+
+            assert len(roots) == len(baseline), (
+                f"{tc['desc']}: iteration {i} found {len(roots)} roots, "
+                f"baseline had {len(baseline)}."
+            )
+
+            passed, x_norm, y_norm = norm_pass_or_fail(roots, baseline, tol=tc["tol"])
+            assert passed, (
+                f"{tc['desc']}: iteration {i} diverged from baseline. "
+                f"x_norm={x_norm:.2e}, y_norm={y_norm:.2e} (tol={tc['tol']:.2e})."
+            )
+
+        with capsys.disabled():
+            print(
+                f"\n{tc['desc']}: {DETERMINISM_ITERATIONS} parallel solves "
+                f"agreed on {len(baseline)} roots."
             )

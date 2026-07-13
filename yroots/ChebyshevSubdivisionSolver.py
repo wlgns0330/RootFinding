@@ -1908,8 +1908,8 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
         Defaults to False. Whether or not to run quadratic check in dim >= 4.
     max_cpu : int
         Defaults to 1. Maximum number of CPUs to use when dispatching subdivided regions to the
-        multilevel parallel driver. One CPU is reserved for the main thread, so the worker pool
-        is sized at ``max_cpu - 1``.
+        multilevel parallel driver. CPU is not reserved for the main thread, so the worker pool
+        is sized at ``max_cpu``, not ``max_cpu - 1``.
     parallel_depth : int
         Defaults to 0. Subdivision depth at which child tasks start being pushed to the worker
         pool. Higher values keep work serial for longer before parallelizing.
@@ -1937,7 +1937,7 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     solverOptions.low_dim_quadratic_check = low_dim_quadratic_check
     solverOptions.all_dim_quadratic_check = all_dim_quadratic_check
     solverOptions.useFinalStep = True
-    solverOptions.max_cpu=max_cpu-1
+    solverOptions.max_cpu=max_cpu
     solverOptions.parallel_depth=parallel_depth
 
     if verbose:
