@@ -16,12 +16,14 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     subdivided into subregions, and the searching function is recursively called until it zeros in
     on each root. A specific point (and, optionally, a bounding box) is returned for each root found.
 
-    NOTE: YRoots uses just in time compiling, which means that part of the code will not be compiled until
-    a system of functions to solve is given (rather than compiling all the code upon importing the module).
-    As a result, the very first time the solver is given any system of equations of a particular dimension,
-    the module will take several seconds longer to solve due to compiling time. Once the first system of a
-    particular dimension has run, however, other systems of that dimension (or even the same system run
-    again) will be solved at the normal (faster) speed thereafter.
+    NOTE: YRoots uses just-in-time compiling with an on-disk cache. The first time the solver is called at
+    a given dimension on any given install, numba compiles the required specializations (which takes several
+    seconds or minutes) and writes them to ``yroots/__pycache__/`` as ``.nbi``/``.nbc`` files. Every later Python
+    process that solves a system of that same dimension loads the compiled code from disk on first call --
+    no recompilation, no warmup. The cache is invalidated automatically when the source file or the numba
+    version changes, and it is rebuilt lazily on the next call. Because the cache is keyed by the dimension
+    of the system (a new type signature per dimension), the very first solve at each new dimension on a
+    fresh install still pays a one-time compile cost.
 
     NOTE: The solve function is only guaranteed to work well on systems of equations where each function
     is continuous and smooth and each root in the interval is a simple root. If a function is not
