@@ -12,7 +12,7 @@ import itertools
 from scipy.fftpack import dctn
 import warnings
 
-@njit
+@njit(cache=True)
 def transform(x, a, b):
     """Transforms points from the interval [-1, 1] to the interval [a, b].
 

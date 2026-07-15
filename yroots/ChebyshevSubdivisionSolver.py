@@ -104,7 +104,7 @@ class SolverOptions():
     def copy(self):
         return copy.copy(self) #Return shallow copy, everything should be a basic type
 
-@njit
+@njit(cache=True)
 def TransformChebInPlace1D(coeffs, alpha, beta):
     """Applies the transformation alpha*x + beta to one dimension of a Chebyshev approximation.
 
@@ -181,7 +181,7 @@ def TransformChebInPlace1D(coeffs, alpha, beta):
     #
     return transformedCoeffs[:maxRow]
 
-@njit
+@njit(cache=True)
 def TransformChebInPlace1DErrorFree(coeffs, alpha, beta):
     """Applies the transformation alpha*x + beta to the Chebyshev polynomial coeffs with minimal error.
 
@@ -298,7 +298,7 @@ def TransformChebInPlace1DErrorFree(coeffs, alpha, beta):
         arr3E = arr
     return transformedCoeffs[:maxRow]
 
-@njit
+@njit(cache=True)
 def TransformChebInPlace1DErrorFreeSplit(coeffs, betaSign):
     """Applies the transformation 0.5*x +- 0.5 to the Chebyshev polynomial coeffs with minimal error.
 
@@ -672,7 +672,7 @@ def getLinearTerms(M):
     return A[::-1] # Return linear terms in dimension order.
 
 
-@njit
+@njit(cache=True)
 def linearCheck1(totalErrs, A, consts):
     """Takes A, the linear terms of each function approximation, and makes any possible reduction
         in the interval based on the totalErrs."""
@@ -821,7 +821,7 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
             #so return the original interval with changed = False and is_done = wellConditioned
             return np.vstack([a_orig,b_orig]).T, False, wellConditioned or forceShouldStop, False
 
-@njit(UniTuple(float64,2)(float64, float64))
+@njit(UniTuple(float64,2)(float64, float64))(cache=True)
 def TwoSum(a,b):
     """Returns x,y such that a+b=x+y exactly, and a+b=x in floating point using numba."""
     x = a+b
@@ -835,7 +835,7 @@ def TwoSum_NoNumba(a,b):
     y = (a-(x-z)) + (b-z)
     return x,y
 
-@njit(UniTuple(float64,2)(float64))
+@njit(UniTuple(float64,2)(float64))(cache=True)
 def Split(a):
     """Returns x,y such that a = x+y exactly and a = x in floating point using numba."""
     c = (2**27 + 1) * a
@@ -849,7 +849,7 @@ def Split_NoNumba(a):
     y = a-x
     return x,y
 
-@njit(UniTuple(float64,2)(float64, float64))
+@njit(UniTuple(float64,2)(float64, float64))(cache=True)
 def TwoProd(a,b):
     """Returns x,y such that a*b=x+y exactly and a*b=x in floating point using numba."""
     x = a*b
@@ -865,7 +865,7 @@ def TwoProd_NoNumba(a,b):
     y=a2*b2-(((x-a1*b1)-a2*b1)-a1*b2)
     return x,y
 
-@njit(UniTuple(float64,2)(float64, float64, float64, float64))
+@njit(UniTuple(float64,2)(float64, float64, float64, float64))(cache=True)
 def TwoProdWithSplit(a,b,a1,a2):
     """Returns x,y such that a*b = x+y exactly and a*b = x in floating point but with a already split."""
     x = a*b
