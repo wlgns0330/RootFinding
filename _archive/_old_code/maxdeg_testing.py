@@ -1,4 +1,4 @@
-from random_tests import *
+from hyun.RootFinding._archive._old_code.random_tests import *
 from yroots.polynomial import MultiPower, MultiCheb
 from yroots.polyroots import solve
 from timeit import default_timer as timer

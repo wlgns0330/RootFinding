@@ -1,5 +1,5 @@
 import numpy as np
-from random_tests import save_tests
+from hyun.RootFinding._archive._old_code.random_tests import save_tests
 np.random.seed(2)
 
 degrees = {}

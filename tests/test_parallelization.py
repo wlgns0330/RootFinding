@@ -35,11 +35,16 @@ PARALLEL_DEPTH = 2
 HEAVY_CASE_IDS = {"2.4", "2.5", "3.2", "4.2"}
 MIN_HEAVY_SPEEDUP = 1.5
 
-# Case used for the parallel-determinism stress test. Chosen for having many
+# Cases used for the parallel-determinism stress test. Chosen for having many
 # roots and wide subdivision, so the parallel driver actually exercises the
 # scheduling paths (a case that solves without subdividing tells us nothing).
 DETERMINISM_CASE_ID = "2.5"
 DETERMINISM_ITERATIONS = 20
+
+# Worker-count values swept in the max_cpu-sweep agreement test. Every value
+# must produce the same root set as max_cpu=1, otherwise a specific worker
+# count is influencing the answer instead of just when it arrives.
+MAX_CPU_SWEEP = sorted({1, 2, 4, min(8, os.cpu_count() or 4)})
 
 POLISHED_DIR = os.path.join(os.path.dirname(__file__), "./Polished_results")
 
@@ -488,8 +493,9 @@ class TestParallelDeterminism:
     ordering leaked into the results this test would flake.
     """
 
-    def test_repeated_parallel_solves_agree(self, capsys):
-        tc = next(t for t in TEST_CASES if t["id"] == DETERMINISM_CASE_ID)
+    @pytest.mark.parametrize("case_id", sorted(HEAVY_CASE_IDS))
+    def test_repeated_parallel_solves_agree(self, case_id, capsys):
+        tc = next(t for t in TEST_CASES if t["id"] == case_id)
 
         baseline = None
         for i in range(DETERMINISM_ITERATIONS):
@@ -520,4 +526,64 @@ class TestParallelDeterminism:
             print(
                 f"\n{tc['desc']}: {DETERMINISM_ITERATIONS} parallel solves "
                 f"agreed on {len(baseline)} roots."
+            )
+
+
+# ---------------------------------------------------------------------------
+# max_cpu sweep — different worker counts must produce identical root sets
+# ---------------------------------------------------------------------------
+
+class TestMaxCpuSweep:
+    """
+    A specific worker count is a scheduling choice, not a mathematical one.
+    Solving the same system with max_cpu = 1, 2, 4, 8 must produce the same
+    root set. If it doesn't, worker count is influencing the answer (leaked
+    ordering, unstable subdivision decisions, race in a supposedly-pure code
+    path) — all classes of bug worth catching.
+    """
+
+    def _solve_with(self, tc, max_cpu):
+        kwargs = dict(exact=True)
+        if max_cpu > 1:
+            kwargs["max_cpu"] = max_cpu
+            kwargs["parallel_depth"] = PARALLEL_DEPTH
+        return np.atleast_2d(
+            solve([tc["f"], tc["g"]], tc["a_min"], tc["a_max"], **kwargs)
+        )
+
+    def test_max_cpu_sweep_agreement(self, test_case, capsys):
+        tc = test_case
+
+        # max_cpu=1 is the reference — no scheduler in the loop at all.
+        try:
+            baseline = self._solve_with(tc, max_cpu=1)
+        except RecursionError:
+            pytest.fail(f"{tc['desc']}: serial solve() hit maximum recursion depth.")
+
+        for max_cpu in MAX_CPU_SWEEP:
+            if max_cpu == 1:
+                continue
+            try:
+                roots = self._solve_with(tc, max_cpu=max_cpu)
+            except RecursionError:
+                pytest.fail(
+                    f"{tc['desc']}: parallel solve() with max_cpu={max_cpu} "
+                    f"hit maximum recursion depth."
+                )
+
+            assert len(roots) == len(baseline), (
+                f"{tc['desc']}: max_cpu={max_cpu} found {len(roots)} roots, "
+                f"baseline (max_cpu=1) had {len(baseline)}."
+            )
+
+            passed, x_norm, y_norm = norm_pass_or_fail(roots, baseline, tol=tc["tol"])
+            assert passed, (
+                f"{tc['desc']}: max_cpu={max_cpu} diverged from max_cpu=1 baseline. "
+                f"x_norm={x_norm:.2e}, y_norm={y_norm:.2e} (tol={tc['tol']:.2e})."
+            )
+
+        with capsys.disabled():
+            print(
+                f"\n{tc['desc']}: max_cpu sweep {MAX_CPU_SWEEP} agreed on "
+                f"{len(baseline)} roots."
             )
