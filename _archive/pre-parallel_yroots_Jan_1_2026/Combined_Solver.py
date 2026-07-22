@@ -5,9 +5,9 @@ import functools
 import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import yroots.ChebyshevApproximator as ChebyshevApproximator
 from yroots.polynomial import MultiCheb,MultiPower
+from time import time
 
-def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1,
-          parallel_depth=1):
+def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
 
     Generates an approximation for each function using Chebyshev polynomials on the interval given,
@@ -16,14 +16,12 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     subdivided into subregions, and the searching function is recursively called until it zeros in
     on each root. A specific point (and, optionally, a bounding box) is returned for each root found.
 
-    NOTE: YRoots uses just-in-time compiling with an on-disk cache. The first time the solver is called at
-    a given dimension on any given install, numba compiles the required specializations (which takes several
-    seconds or minutes) and writes them to ``yroots/__pycache__/`` as ``.nbi``/``.nbc`` files. Every later Python
-    process that solves a system of that same dimension loads the compiled code from disk on first call --
-    no recompilation, no warmup. The cache is invalidated automatically when the source file or the numba
-    version changes, and it is rebuilt lazily on the next call. Because the cache is keyed by the dimension
-    of the system (a new type signature per dimension), the very first solve at each new dimension on a
-    fresh install still pays a one-time compile cost.
+    NOTE: YRoots uses just in time compiling, which means that part of the code will not be compiled until
+    a system of functions to solve is given (rather than compiling all the code upon importing the module).
+    As a result, the very first time the solver is given any system of equations of a particular dimension,
+    the module will take several seconds longer to solve due to compiling time. Once the first system of a
+    particular dimension has run, however, other systems of that dimension (or even the same system run
+    again) will be solved at the normal (faster) speed thereafter.
 
     NOTE: The solve function is only guaranteed to work well on systems of equations where each function
     is continuous and smooth and each root in the interval is a simple root. If a function is not
@@ -33,7 +31,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     Examples
     --------
 
-    >>> f = lambda x,y,z: 2*x**2 / (x**4-4) - 2*y**2 + .5*z
+    >>> f = lambda x,y,z: 2*x**2 / (x**4-4) - 2*x**2 + .5
     >>> g = lambda x,y,z: 2*x**2*y / (y**2+4) - 2*y + 2*x*z
     >>> h = lambda x,y,z: 2*z / (z**2-4) - 2*z
     >>> roots = yroots.solve([f, g, h], np.array([-0.5,0,-2**-2.44]), np.array([0.5,np.exp(1.1376),.8]))
@@ -52,46 +50,40 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     Parameters
     ----------
-    funcs : list
+    funcs: list
         List of functions for searching. NOTE: Valid input is restricted to callable Python functions
         (including user-created functions) and yroots Polynomial (MultiCheb and MultiPower) objects.
         String representations of functions are not valid input.
-    a : list or numpy array
+    a: list or numpy array
         An array containing the lower bound of the search interval in each dimension, listed in
         dimension order. If the lower bound is to be the same in each dimension, a single float input
         is also accepted. Defaults to -1 in each dimension if no input is given.
-    b : list or numpy array
+    b: list or numpy array
         An array containing the upper bound of the search interval in each dimension, listed in
         dimension order. If the upper bound is to be the same in each dimension, a single float input
         is also accepted. Defaults to 1 in each dimension if no input is given.
     verbose : bool
-        Defaults to False. When True, prints progress of approximation and rootfinding to the terminal.
-        Useful for long-running systems.
+        Defaults to False. Tracks progress of the approximation and rootfinding by outputting progress to
+        the terminal. Useful in tracking progress of systems of equations that take a long time to solve.
     returnBoundingBoxes : bool
         Defaults to False. Whether or not to return a precise bounding box for each root.
-    exact : bool
+    exact: bool
         Defaults to False. Whether transformations performed on the approximation should be performed
         with higher precision to minimize error.
-    minBoundingIntervalSize : float
+    minBoundingIntervalSize : double
         Defaults to 1e-5. If a root is found with a bounding interval of size > minBoundingIntervalSize in
         each dimension, the functions are solved again on the smaller interval. Setting too small could cause
         issues if the functions can't be evaluated accurately on points close together, and will increase solve
-        times. Should give more accurate roots when smaller. This number is absolute when the bounding interval in
+        times. Should give more accurate roots when smaller. This number is absolute when the boudning interval in
         question is in [-1,1], and relative otherwise. So if an interval has an endpoint of magnitude > 1, then
-        minBoundingIntervalSize is multiplied by that value for that dimension.
-    max_cpu : int
-        Defaults to 1. Max number of allowed cpus when solving subdivided regions.
-    parallel_depth : int
-        Defaults to 1. Subdivision depth at which child tasks start being pushed to the worker
-        pool. Higher values keep work serial for longer before parallelizing.
+        minBoundingIntervalSize is multipled by that value for that dimension.
 
     Returns
     -------
-    roots : numpy array
-        The roots of the system of functions on the interval.
-    boundingBoxes : numpy array, optional
-        Only returned when ``returnBoundingBoxes`` is True. The exact intervals (boxes) in
-        which each root is bound to lie.
+    yroots : numpy array
+        A list of the roots of the system of functions on the interval.
+    boundingBoxes : numpy array (optional)
+        The exact intervals (boxes) in which each root is bound to lie.
     """
     # Ensure input functions and upper/lower bounds are valid
     if type(funcs) != list and type(funcs) != np.ndarray:
@@ -128,6 +120,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         betas = (b + a) / 2
 
     for i in range(dim):
+        # t = time()
         if isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
             errs[i] = macheps
@@ -140,6 +133,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         else:
             polys[i], errs[i] = ChebyshevApproximator.chebApproximate(funcs[i],a,b)
+        # return time() - t
         if verbose:
             print(f"{i}: {polys[i].shape}", end = " " if i != dim-1 else '\n')
     if verbose:
@@ -147,7 +141,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
 
     #Solve the Chebyshev polynomial system
     yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
-                constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu, parallel_depth=parallel_depth)
+                constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False)
     
     #If the bounding box is the entire interval, subdivide it!
     usingSubdivision = np.all(b-a > minBoundingIntervalSize)
@@ -164,8 +158,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Solve recursively
             if verbose:
                 print("Re-solving on:", newA, newB)
-            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize,
-                                 max_cpu=max_cpu, parallel_depth=parallel_depth)
+            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize)
             if len(roots) != 0:
                 boundingBoxes.append(boxes)
                 yroots.append(roots)
@@ -192,8 +185,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Re-solve this box
             if verbose:
                 print("Re-solving on:", newA, newB)
-            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize=minBoundingIntervalSize,
-                                 max_cpu=max_cpu, parallel_depth=parallel_depth)
+            roots, boxes = solve(funcs, a=newA, b=newB, verbose=verbose, returnBoundingBoxes=True, exact=exact, minBoundingIntervalSize = minBoundingIntervalSize)
             if len(roots) > 0:
                 finalRoots.append(roots)
                 finalBoxes.append(boxes)
