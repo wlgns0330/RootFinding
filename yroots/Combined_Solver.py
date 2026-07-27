@@ -19,11 +19,17 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     NOTE: YRoots uses just-in-time compiling with an on-disk cache. The first time the solver is called at
     a given dimension on any given install, numba compiles the required specializations (which takes several
     seconds or minutes) and writes them to ``yroots/__pycache__/`` as ``.nbi``/``.nbc`` files. Every later Python
-    process that solves a system of that same dimension loads the compiled code from disk on first call --
-    no recompilation, no warmup. The cache is invalidated automatically when the source file or the numba
+    process that solves a system of that same dimension loads the compiled code from disk on first call
+    instead of recompiling. The cache is invalidated automatically when the source file or the numba
     version changes, and it is rebuilt lazily on the next call. Because the cache is keyed by the dimension
     of the system (a new type signature per dimension), the very first solve at each new dimension on a
     fresh install still pays a one-time compile cost.
+
+    After the cache is keyed for a certain dimension, a fresh Python process still pays roughly one second or less of
+    import overhead the first time it does ``import yroots`` (for numpy, numba, and the yroots modules
+    themselves), and each new dimension adds roughly 30-50 ms to its first solve call for reading the
+    cached binaries from disk, linking them, and populating numba's dispatch table. However, both costs are
+    per-process rather than per-call, essentially replacing a multi-second/minute warmup with a couple seconds of warmup.
 
     NOTE: The solve function is only guaranteed to work well on systems of equations where each function
     is continuous and smooth and each root in the interval is a simple root. If a function is not
