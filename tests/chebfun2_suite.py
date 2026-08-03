@@ -164,10 +164,11 @@ def verbose_pass_or_fail(funcs, yroots, polished_roots, test_num, cheb_roots=Non
     if polished_roots.ndim == 1:
         polished_roots = polished_roots[..., np.newaxis].T
     
-    #Fail if the number of roots is wrong
-    if len(yroots) != len(polished_roots) and test_num != 6.1:
-        print(f"\t Num Roots Wrong! Found {len(yroots)}, Has {len(polished_roots)}!")
-        return False, False
+    if len(yroots) != len(polished_roots):
+        raise AssertionError(
+            f"Test {test_num}: YRoots found {len(yroots)} roots, but the "
+            f"polished roots reference has {len(polished_roots)}!"
+        )
 
     alt_resid_tols = {4.2: 3.35e-07, 10.1 : 5e-12}
     if test_num in alt_resid_tols.keys():
