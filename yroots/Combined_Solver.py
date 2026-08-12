@@ -164,7 +164,7 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Split almost in half
             #TODO: Do we need to combine bounding boxes in this step of the recursion as well?
             #      For now it seems safe enough to assume we won't have any roots on the midpoints.
-            midPoint = (a + b) * 0.51234912839471234
+            midPoint = a + (b - a) * 0.51234912839471234
             newA = np.where(val, midPoint, a)
             newB = np.where(val, b, midPoint)
             #Solve recursively
@@ -178,6 +178,10 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         if len(yroots) > 0:
             yroots = np.vstack(yroots)
             boundingBoxes = np.vstack(boundingBoxes)
+        else:
+            #Always hand back arrays of the documented shape, even when nothing was found
+            yroots = np.empty((0,dim))
+            boundingBoxes = np.empty((0,dim,2))
         if returnBoundingBoxes:
             return yroots, boundingBoxes
         else:
@@ -205,12 +209,12 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
                 finalBoxes.append(boxes)
         else:
             #Transform back
-            finalBoxes.append([ChebyshevApproximator.transform(box.finalInterval.T,a,b).T])
-            #Get the roots from this box
-            if len(box.possibleDuplicateRoots) > 0:
-                finalRoots.append(ChebyshevApproximator.transform(np.array(box.possibleDuplicateRoots),a,b))
-            else:
-                finalRoots.append(ChebyshevApproximator.transform(box.getFinalPoint(),a,b))
+            transformedBox = ChebyshevApproximator.transform(box.finalInterval.T,a,b).T
+            #Get the roots from this box, and repeat the box once per root it reports, so
+            #finalRoots and finalBoxes stay index-aligned.
+            boxRoots = ChebyshevSubdivisionSolver.getRootsInInterval(box)
+            finalRoots.append(ChebyshevApproximator.transform(np.array(boxRoots),a,b))
+            finalBoxes.append(np.repeat(transformedBox[np.newaxis], len(boxRoots), axis=0))
     if len(finalBoxes) != 0:
         finalBoxes = np.vstack(finalBoxes)
     if len(finalRoots) != 0:

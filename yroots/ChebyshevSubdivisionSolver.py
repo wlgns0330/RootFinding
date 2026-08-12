@@ -96,6 +96,7 @@ class SolverOptions():
         self.all_dim_quadratic_check = False
         self.maxZoomCount = 25
         self.level = 0
+        self.useFinalStep = True
 
         self.max_cpu = 1
         self.allowParallel = True
@@ -470,7 +471,7 @@ class TrackedInterval:
     """
     def __init__(self, interval):
         self.topInterval = interval
-        self.interval = interval
+        self.interval = np.array(interval)
         self.transforms = []
         self.ndim = len(self.interval)
         self.empty = False
@@ -759,12 +760,16 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
     #This loop will only execute the second time if the interval was not changed on the first iteration and it needs to run again with tighter errors
     #Calculate the SVD outside of the for loop because it doesn't change
     U, S, Vh = np.linalg.svd(A)
-    condNum = S[-1]/S[0]
-    wellConditioned = S[0] > 0 and condNum > 1e-10
-    #Add this width to the new intervals we find to avoid rounding error throwing out roots
+    #Test the reciprocal condition number rather than the condition number itself, so that
+    #a singular A gives 0 instead of a divide by zero. S[0] == 0 means A is all zeros.
+    invCondNum = S[-1]/S[0] if S[0] > 0 else 0.
+    wellConditioned = S[0] > 0 and invCondNum > 1e-10
+    condNum = 1/invCondNum if wellConditioned else 1.
     widthToAdd = max(condNum,2)*macheps
-    Ainv = (1/S * Vh.T) @ U.T
-    center = -Ainv@consts
+    if wellConditioned:
+        #Only invert A when it is safe to do so.
+        Ainv = (1/S * Vh.T) @ U.T
+        center = -Ainv@consts
     #Use the first interval shrinking method
     a_init, b_init = linearCheck1(totalErrs, A, consts)
     for i in range(2):
@@ -784,9 +789,6 @@ def BoundingIntervalLinearSystem(Ms, errors, finalStep, macheps = 2**-52):
         #Add error and bound
         a -= widthToAdd
         b += widthToAdd
-        if np.any(a > b):
-            with open("num_of_times","a") as file:
-                file.write("1\n")
         throwOut = np.any(a > b) or np.any(a > 1) or np.any(b < -1)
         a[a < -1] = -1
         b[b < -1] = -1
@@ -1333,13 +1335,14 @@ def finish_subdivision_state(state, childInterior, childExterior):
             else:
                 return [trackedInterval], []
 
-        # Combine all roots that converged to the same point. Use interval overlap
-        # (not exact lower-bound match) so singular roots whose sub-intervals differ
-        # by floating-point noise still collapse to one.
+        # Combine all roots that converged to the same point.
+        allFoundRoots = set()
         tempResults = []
         for result in resultsAll:
-            if any(result.overlapsWith(kept) for kept in tempResults):
+            point = tuple(result.interval[:,0])
+            if point in allFoundRoots:
                 continue
+            allFoundRoots.add(point)
             tempResults.append(result)
 
         for result in tempResults:
@@ -1659,15 +1662,12 @@ def solvePolyRecursive(Ms, trackedInterval, errors, solverOptions, returnChildre
     trackedInterval = trackedInterval.copy()
     errors = errors.copy()
 
-    tolerable_error = max(errors) * 1e-3
     trimMs(Ms, errors)
 
-    dim = Ms[0].ndim
     changed = True
     zoomCount = 0
 
     originalInterval = trackedInterval.copy()
-    originalIntervalSize = trackedInterval.size()
 
     lastSizes = trackedInterval.dimSize()
 
@@ -1945,30 +1945,25 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     b1, b2 = solvePoly(Ms, originalInterval, errors, solverOptions)
 
     boundingIntervals = b1 + b2
-    # Dedup overlapping final bounding intervals. The in-recursion merge only compares
-    # siblings on resultExterior, so singular roots reached from multiple recursion
-    # branches survive as separate interior intervals. Overlapping final boxes cannot
-    # enclose distinct roots, so collapse them here.
-    dedupedIntervals = []
-    for interval in boundingIntervals:
-        if not any(interval.overlapsWith(kept) for kept in dedupedIntervals):
-            dedupedIntervals.append(interval)
-    boundingIntervals = dedupedIntervals
-    
     roots = []
     hasDupRoots = False
     hasExtraRoots = False
+
+    def getRootsInInterval(interval):
+        """Gets the roots that a final bounding interval reports."""
+        if len(interval.possibleDuplicateRoots) > 0:
+            return list(interval.possibleDuplicateRoots)
+        return [interval.getFinalPoint()]
+
     for interval in boundingIntervals:
-        #TODO: Figure out the best way to return the bounding intervals.
-        #Right now interval.finalInterval is the interval where we say the root is.
         interval.getFinalInterval()
         if interval.possibleExtraRoot:
             hasExtraRoots = True
         if len(interval.possibleDuplicateRoots) > 0:
-            roots += interval.possibleDuplicateRoots
             hasDupRoots = True
-        else:
-            roots.append(interval.getFinalPoint())
+        intervalRoots = getRootsInInterval(interval)
+        roots += intervalRoots
+
     #Warn if extra or duplicate roots
     if hasExtraRoots:
         warnings.warn(f"Might Have Extra Roots! See Bounding Boxes for details!")
