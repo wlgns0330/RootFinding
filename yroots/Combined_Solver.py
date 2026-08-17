@@ -217,8 +217,12 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             finalBoxes.append(np.repeat(transformedBox[np.newaxis], len(boxRoots), axis=0))
     if len(finalBoxes) != 0:
         finalBoxes = np.vstack(finalBoxes)
+    else:
+        finalBoxes = np.empty((0,dim,2))
     if len(finalRoots) != 0:
         finalRoots = np.vstack(finalRoots)
+    else:
+        finalRoots = np.empty((0,dim))
     
     # Find and return the roots (and, optionally, the bounding boxes)
     if returnBoundingBoxes:

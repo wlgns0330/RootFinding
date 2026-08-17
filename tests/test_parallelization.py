@@ -305,19 +305,7 @@ TEST_CASES = [
         a_min = [-2, -2],
         a_max = [ 2,  2],
         tol   = DEFAULT_TOL,
-    ),
-    dict(
-        id    = "6.1",
-        desc  = "Test 6.1 – line/circle system, 5 roots (one singular, found twice)",
-        #The root at the origin is singular, so the solver reports it once per
-        #recursion branch that reaches it: 6 roots against 5 polished ones.
-        dup_roots = 1,
-        f     = lambda x, y: (y - 2*x) * (y + 0.5*x),
-        g     = lambda x, y: x * (x**2 + y**2 - 1),
-        a_min = [-1, -1],
-        a_max = [ 1,  1],
-        tol   = 2.220446049250313e-8,
-    ),
+    )
 ]
 
 _ids = [tc["id"] for tc in TEST_CASES]

@@ -1245,6 +1245,12 @@ def isExteriorInterval(originalInterval, trackedInterval):
     """Determines if the current interval is exterior to its original interval."""
     return np.any(trackedInterval.getIntervalForCombining() == originalInterval.getIntervalForCombining())
 
+def getRootsInInterval(interval):
+        """Gets the roots that a final bounding interval reports."""
+        if len(interval.possibleDuplicateRoots) > 0:
+            return list(interval.possibleDuplicateRoots)
+        return [interval.getFinalPoint()]
+
 def make_child_tasks(allMs, allErrors, allIntervals, parent_id=None, level=0):
     """Bundle subdivided children into :class:`SolveTask` records for the parallel driver.
 
@@ -1948,12 +1954,6 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, returnBoundingBoxes =
     roots = []
     hasDupRoots = False
     hasExtraRoots = False
-
-    def getRootsInInterval(interval):
-        """Gets the roots that a final bounding interval reports."""
-        if len(interval.possibleDuplicateRoots) > 0:
-            return list(interval.possibleDuplicateRoots)
-        return [interval.getFinalPoint()]
 
     for interval in boundingIntervals:
         interval.getFinalInterval()
