@@ -59,7 +59,8 @@ def interval_approximate_nd(f, degs, a, b, retSupNorm = False):
         The sup norm of the function, approximated as the maximum function evaluation.
     """
     dim = len(degs)
-    # If any dimension has degree 0, turn it to degree 1 (will be sliced out at the end)
+    # If any dimension has degree 0, turn it to degree 1 (will be sliced out at the end).
+    # Work on a copy so the degrees passed in by the caller are left untouched.
     originalDegs = degs
     degs = np.array(degs)
     degs[degs == 0] = 1
@@ -179,8 +180,8 @@ def getFinalDegree(coeff,tol,macheps = 2**-52):
     # Calculate the rate of convergence
     maxSpot = np.argmax(coeff)
     if coeff[maxSpot] == 0:
-        #Every coefficient is 0, so the approximation is exact. Report perfect
-        #convergence instead of dividing 0 by epsVal.
+        #Every coefficient is 0, so the approximation is exact. Report perfect convergence
+        #instead of dividing 0 by epsVal, which would give a rate of 0 (and a negative error bound).
         return degree, 0, np.inf
     if epsVal == 0:
         epsVal = coeff[maxSpot] * 1e-24

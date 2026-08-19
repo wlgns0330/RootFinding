@@ -6,6 +6,11 @@ import yroots.ChebyshevSubdivisionSolver as ChebyshevSubdivisionSolver
 import yroots.ChebyshevApproximator as ChebyshevApproximator
 from yroots.polynomial import MultiCheb,MultiPower
 
+def _printRootCount(numRoots):
+    """Prints how many roots are being returned, closing out the solver's progress marks."""
+    finish_string = '\n' + f"Found {numRoots} roots"
+    print((finish_string if numRoots != 1 else finish_string[:-1]),end='\n\n')
+
 def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1,
           parallel_depth=1):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
@@ -152,8 +157,9 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         print(f"Searching on interval {[[a[i],b[i]] for i in range(dim)]}")
 
     #Solve the Chebyshev polynomial system
-    yroots, boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,True,exact,
-                constant_check=True, low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu, parallel_depth=parallel_depth)
+    #Solve the Chebyshev polynomial system
+    boundingBoxes = ChebyshevSubdivisionSolver.solveChebyshevSubdivision(polys,errs,verbose,exact, constant_check=True,
+                low_dim_quadratic_check=True, all_dim_quadratic_check=False, max_cpu=max_cpu, parallel_depth=parallel_depth)
     
     #If the bounding box is the entire interval, subdivide it!
     usingSubdivision = np.all(b-a > minBoundingIntervalSize)
@@ -182,10 +188,10 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Always hand back arrays of the documented shape, even when nothing was found
             yroots = np.empty((0,dim))
             boundingBoxes = np.empty((0,dim,2))
+        if verbose:
+            _printRootCount(len(yroots))
         if returnBoundingBoxes:
             return yroots, boundingBoxes
-        else:
-            return yroots
     
     #TODO: Handle if we have duplicate roots or extra roots at the top level. Easiest if we actually return the bounding boxes!
     #Maybe return the bounding boxes in the recursive steps?
@@ -211,7 +217,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             #Transform back
             transformedBox = ChebyshevApproximator.transform(box.finalInterval.T,a,b).T
             #Get the roots from this box, and repeat the box once per root it reports, so
-            #finalRoots and finalBoxes stay index-aligned.
+            #finalRoots and finalBoxes stay index-aligned. A box that could not separate the
+            #roots inside it reports more than one, and each of them gets that same box.
             boxRoots = ChebyshevSubdivisionSolver.getRootsInInterval(box)
             finalRoots.append(ChebyshevApproximator.transform(np.array(boxRoots),a,b))
             finalBoxes.append(np.repeat(transformedBox[np.newaxis], len(boxRoots), axis=0))
@@ -225,6 +232,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
         finalRoots = np.empty((0,dim))
     
     # Find and return the roots (and, optionally, the bounding boxes)
+    if verbose:
+        _printRootCount(len(finalRoots))
     if returnBoundingBoxes:
         return finalRoots, finalBoxes
     else:
