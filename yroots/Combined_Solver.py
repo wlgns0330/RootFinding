@@ -192,6 +192,8 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
             _printRootCount(len(yroots))
         if returnBoundingBoxes:
             return yroots, boundingBoxes
+        else:
+            return yroots
     
     #TODO: Handle if we have duplicate roots or extra roots at the top level. Easiest if we actually return the bounding boxes!
     #Maybe return the bounding boxes in the recursive steps?
