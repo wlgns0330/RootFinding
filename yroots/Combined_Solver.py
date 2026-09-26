@@ -11,6 +11,20 @@ def _printRootCount(numRoots):
     finish_string = '\n' + f"Found {numRoots} roots"
     print((finish_string if numRoots != 1 else finish_string[:-1]),end='\n\n')
 
+def relativeRoundingError(coeff, macheps=2**-52):
+    """Bound the error of a polynomial given exactly as coefficients: rounding in those coefficients.
+
+    Each coefficient is off by at most macheps times its own size, so the polynomial is off by at most
+    macheps times the sum of their sizes anywhere on [-1,1]^n. A fixed macheps instead is only right
+    when the coefficients are of order 1: scale them below it and the error swamps the polynomial, so
+    no interval can be discarded and the solver subdivides without end.
+
+    The identically zero polynomial keeps the fixed macheps. Its relative error is 0, which makes the
+    solver report no roots for a polynomial that vanishes everywhere.
+    """
+    absSum = np.sum(np.abs(coeff))
+    return macheps*absSum if absSum > 0 else macheps
+
 def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=False, minBoundingIntervalSize=1e-5, max_cpu=1,
           parallel_depth=1):
     """Finds and returns the roots of a system of functions on the search interval [a,b].
@@ -141,12 +155,12 @@ def solve(funcs,a=-1,b=1, verbose = False, returnBoundingBoxes = False, exact=Fa
     for i in range(dim):
         if isinstance(funcs[i], MultiPower):
             polys[i] = funcs[i].to_cheb()
-            errs[i] = macheps
+            errs[i] = relativeRoundingError(polys[i])
             if not unit_box:
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         elif isinstance(funcs[i], MultiCheb):
             polys[i] = funcs[i].coeff
-            errs[i] = macheps
+            errs[i] = relativeRoundingError(polys[i])
             if not unit_box:
                 polys[i], errs[i] = ChebyshevSubdivisionSolver.transformCheb(polys[i], alphas, betas, errs[i], exact)
         else:
