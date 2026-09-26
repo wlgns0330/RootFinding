@@ -90,9 +90,8 @@ def test_a_4d_polynomial_system_with_two_double_roots_reports_each_root_once():
     """Two independent double roots at the origin, given as MultiPower. Julia reports 25.
 
     Only scale 1 is here; the count moves with scale (34 at 1e8, 35 at 1e-8, 26 at 1e-20).
-    Given as callables
-    the same system reports the right count only because the approximator's error bound
-    for an exact polynomial comes out near 1e-23, far below its real rounding error.
+    Given as callables the same system reports 36 roots at scale 1 (test_bounding_boxes.py
+    checks their boxes, not their count), so this is not specific to polynomial input.
     """
     roots = yr.solve(singular_4d_system(), -np.ones(4), np.ones(4))
     assert len(roots) == 25

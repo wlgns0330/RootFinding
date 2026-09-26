@@ -239,8 +239,8 @@ def test_polynomial_input_is_solved_at_any_scale(scale, kind, box):
 
     Such a polynomial is exact, so its only error is rounding in its coefficients. That was
     set to a fixed macheps, which is only the right size for coefficients of order 1: scaled
-    to 1e-14 and below, the error swamped every coefficient, no interval could be discarded,
-    and solve subdivided without end. Passed as callables the same system was solved at every
+    to 1e-14 it was about 2% of them and solve no longer finished, and from 1e-16 down it
+    exceeded every coefficient. Passed as callables the same system was solved at every
     scale, since the approximator's error scales with the function.
     """
     with fails_instead_of_hanging(30):

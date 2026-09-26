@@ -16,8 +16,8 @@ def relativeRoundingError(coeff, macheps=2**-52):
 
     Each coefficient is off by at most macheps times its own size, so the polynomial is off by at most
     macheps times the sum of their sizes anywhere on [-1,1]^n. A fixed macheps instead is only right
-    when the coefficients are of order 1: scale them below it and the error swamps the polynomial, so
-    no interval can be discarded and the solver subdivides without end.
+    when the coefficients are of order 1: scale them down and it becomes a large fraction of them --
+    about 2% at 1e-14, more than all of them from 1e-16 down -- and the solver no longer finishes.
 
     The identically zero polynomial keeps the fixed macheps. Its relative error is 0, which makes the
     solver report no roots for a polynomial that vanishes everywhere.
