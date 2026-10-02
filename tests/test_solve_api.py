@@ -528,3 +528,54 @@ def test_importing_yroots_after_numba_is_quiet_when_the_cap_applies():
     assert "RuntimeWarning" not in result.stdout, (
         f"warned even though the cap applied cleanly:\n{result.stdout}")
 
+
+
+############################### duplicate roots ##############################
+
+def _solve_recording_warnings(funcs, a, b, **kwargs):
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        roots = solve(funcs, a, b, **kwargs)
+    return roots, [str(w.message) for w in caught]
+
+
+@pytest.mark.parametrize("kwargs", [dict(max_cpu=1, parallel_depth=0), dict(max_cpu=2, parallel_depth=1)],
+                         ids=["serial", "parallel"])
+def test_duplicate_roots_are_listed_by_set(kwargs):
+    """y = x**2 and y = -x**2 touch at the origin, so the solver hands back two points it cannot tell
+    apart. The warning names those points, in the coordinates of the search interval, and suggests
+    checking the Jacobian there."""
+    funcs = [lambda x, y: y - x**2, lambda x, y: y + x**2]
+    roots, messages = _solve_recording_warnings(funcs, -1, 1, **kwargs)
+    dupMessages = [m for m in messages if "duplicates" in m]
+    assert len(dupMessages) == 1, messages
+    message = dupMessages[0]
+    assert "Set 1:" in message and "Set 2:" not in message
+    assert "We suggest you check the rank of the Jacobian at these points." in message
+    for root in roots:
+        assert "(" + ", ".join(f"{x:.16g}" for x in root) + ")" in message
+    assert not any("Might Have Duplicate Roots" in m for m in messages)
+
+
+def test_simple_roots_raise_no_duplicate_warning():
+    funcs = [lambda x, y: x - 0.3, lambda x, y: y + 0.2]
+    roots, messages = _solve_recording_warnings(funcs, -1, 1)
+    assert len(roots) == 1
+    assert not any("duplicates" in m for m in messages), messages
+
+
+def test_duplicate_warning_lists_each_set_on_its_own_line():
+    import warnings
+    from yroots.Combined_Solver import _warnDuplicateRoots
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warnDuplicateRoots([np.array([[0.5, 0.5], [0.5000000000062979, 0.5]]),
+                             np.array([[1e-8, 2.0, 0.0], [1.1e-8, 2.0, 0.0], [9e-9, 2.0, 0.0]])])
+    assert len(caught) == 1
+    assert str(caught[0].message).splitlines() == [
+        "The roots in each of the following sets might be duplicates of each other:",
+        "  Set 1: (0.5, 0.5), (0.5000000000062979, 0.5)",
+        "  Set 2: (1e-08, 2, 0), (1.1e-08, 2, 0), (9e-09, 2, 0)",
+        "We suggest you check the rank of the Jacobian at these points.",
+    ]

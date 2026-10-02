@@ -2219,19 +2219,14 @@ def solveChebyshevSubdivision(Ms, errors, verbose = False, exact = False, consta
     b1, b2 = solvePoly(Ms, originalInterval, errors, solverOptions)
 
     boundingIntervals = b1 + b2
-    hasDupRoots = False
     hasExtraRoots = False
 
     for interval in boundingIntervals:
         interval.getFinalInterval()
         if interval.possibleExtraRoot:
             hasExtraRoots = True
-        if len(interval.possibleDuplicateRoots) > 0:
-            hasDupRoots = True
 
-    #Warn if extra or duplicate roots
+    #Warn if extra roots. Duplicate roots are reported by solve, in the coordinates of the search interval.
     if hasExtraRoots:
         warnings.warn(f"Might Have Extra Roots! See Bounding Boxes for details!")
-    if hasDupRoots:
-        warnings.warn(f"Might Have Duplicate Roots! See Bounding Boxes for details!")
     return boundingIntervals
