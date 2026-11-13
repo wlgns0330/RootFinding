@@ -482,6 +482,419 @@ def TransformChebInPlaceND(coeffs, dim, alpha, beta, exact):
     transformedCoeffs = TransformFunc(coeffs, alpha, beta)
     return transformedCoeffs if dim == 0 else transformedCoeffs.transpose(backOrder)
 
+# ---------------------------------------------------------------------------------------------------
+# Fused transforms (exact=False)
+#
+# For low degree systems in several dimensions the solver spends most of its time not on arithmetic
+# but on calling numba and numpy millions of times on tiny tensors: transformCheb transforms one
+# dimension at a time, each by transposing, calling TransformChebInPlace1D and transposing back, and
+# bounds each step's error with absSum. The kernels below do a whole transformCheb, or the whole
+# transform side of getSubdivisionIntervals for one polynomial, in a single numba call.
+#
+# They give bit for bit the same coefficients and error bounds as the code they replace. That takes
+# two kinds of care:
+#   * Every coefficient gets the same floating point operations, in the same order, as in
+#     TransformChebInPlace1D.
+#   * absSum(M) is np.abs(M).sum(), which numpy adds pairwise over M's entries in memory ('K') order,
+#     so the order depends on M's memory layout. The kernels therefore track each tensor's real
+#     strides, gaps from slicing included, and lay out every result exactly where
+#     TransformChebInPlaceND's would be: numba gives a transposed view's result C order, or Fortran
+#     order when that view is Fortran-contiguous, and the result is then cut to its new length.
+#
+# A tensor in these kernels is (buf, shape, strides): strides are in elements and index buf from 0.
+# Alongside, `layout` holds the strides numba would see, which differ from `strides` only for an input
+# that came in through _stridesFromTuples, where buf is a compact copy of the input in 'K' order.
+# ---------------------------------------------------------------------------------------------------
+
+@njit(cache=True)
+def _pairwiseBlockAbsSum(a, lo, n):
+    """Sum of |a[lo:lo+n]| for n <= 128, in the order numpy's pairwise_sum adds a block."""
+    if n < 8:
+        res = 0.
+        for i in range(lo, lo + n):
+            res += abs(a[i])
+        return res
+    r0 = abs(a[lo]); r1 = abs(a[lo+1]); r2 = abs(a[lo+2]); r3 = abs(a[lo+3])
+    r4 = abs(a[lo+4]); r5 = abs(a[lo+5]); r6 = abs(a[lo+6]); r7 = abs(a[lo+7])
+    m = n - n % 8
+    i = 8
+    while i < m:
+        j = lo + i
+        r0 += abs(a[j]); r1 += abs(a[j+1]); r2 += abs(a[j+2]); r3 += abs(a[j+3])
+        r4 += abs(a[j+4]); r5 += abs(a[j+5]); r6 += abs(a[j+6]); r7 += abs(a[j+7])
+        i += 8
+    res = ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7))
+    while i < n:
+        res += abs(a[lo + i])
+        i += 1
+    return res
+
+@njit(cache=True)
+def pairwiseAbsSum(a):
+    """Sum of |a| over a 1D array, bit for bit the same as np.abs(a).sum().
+
+    numpy sums a block of at most 128 entries with eight interleaved accumulators, and splits a
+    longer range at half its length rounded down to a multiple of 8, adding the two halves. This
+    does the same, with an explicit stack in place of numpy's recursion.
+    """
+    n = a.size
+    if n <= 128:
+        return _pairwiseBlockAbsSum(a, 0, n)
+    # Each stack entry is a range still to sum. state 0: sum its left half next; 1: its right half;
+    # 2: both halves are on the value stack, add them.
+    stackLo = np.empty(64, np.int64); stackN = np.empty(64, np.int64)
+    stackState = np.zeros(64, np.int64); vals = np.empty(64)
+    top = 0; nv = 0
+    stackLo[0] = 0; stackN[0] = n
+    while top >= 0:
+        lo = stackLo[top]; m = stackN[top]
+        if m <= 128:
+            vals[nv] = _pairwiseBlockAbsSum(a, lo, m)
+            nv += 1
+            top -= 1
+            continue
+        n2 = m // 2
+        n2 -= n2 % 8
+        state = stackState[top]
+        if state == 2:
+            vals[nv-2] = vals[nv-2] + vals[nv-1]
+            nv -= 1
+            top -= 1
+            continue
+        stackState[top] = state + 1
+        top += 1
+        stackState[top] = 0
+        if state == 0:
+            stackLo[top] = lo; stackN[top] = n2
+        else:
+            stackLo[top] = lo + n2; stackN[top] = m - n2
+    return vals[0]
+
+@njit(cache=True)
+def _isContiguous(shape, strides, fortran):
+    """numpy's C (or, with fortran, Fortran) contiguity flag for element strides. Like numpy, it
+    ignores the strides of length-1 axes and calls any empty array contiguous."""
+    nd = shape.size
+    for a in range(nd):
+        if shape[a] == 0:
+            return True
+    expected = 1
+    for k in range(nd):
+        a = k if fortran else nd - 1 - k
+        if shape[a] != 1:
+            if strides[a] != expected:
+                return False
+            expected *= shape[a]
+    return True
+
+@njit(cache=True)
+def _memoryOrder(shape, strides):
+    """The axes, outermost in memory first: the order numpy's 'K' order takes them in."""
+    nd = shape.size
+    perm = np.arange(nd)
+    for i in range(1, nd): # Stable insertion sort by stride, largest first
+        k = perm[i]
+        j = i - 1
+        while j >= 0 and strides[perm[j]] < strides[k]:
+            perm[j+1] = perm[j]
+            j -= 1
+        perm[j+1] = k
+    return perm
+
+@njit(cache=True)
+def _offsets(shape, strides, axes):
+    """Element offsets of every index over the given axes, the last of them varying fastest."""
+    total = 1
+    for a in axes:
+        total *= shape[a]
+    off = np.zeros(total, np.int64)
+    m = axes.size
+    idx = np.zeros(m, np.int64)
+    cur = 0
+    for t in range(total):
+        off[t] = cur
+        k = m - 1
+        while k >= 0:
+            a = axes[k]
+            idx[k] += 1
+            cur += strides[a]
+            if idx[k] < shape[a]:
+                break
+            cur -= strides[a] * shape[a]
+            idx[k] = 0
+            k -= 1
+    return off
+
+@njit(cache=True)
+def _stridedAbsSum(buf, shape, strides):
+    """absSum of the tensor (buf, shape, strides), bit for bit: |entries| added in 'K' order."""
+    perm = _memoryOrder(shape, strides)
+    expected = 1
+    for k in range(shape.size - 1, -1, -1):
+        a = perm[k]
+        if shape[a] != 1:
+            if strides[a] != expected:
+                # Gaps between entries: gather them in 'K' order first.
+                off = _offsets(shape, strides, perm)
+                entries = np.empty(off.size)
+                for t in range(off.size):
+                    entries[t] = buf[off[t]]
+                return pairwiseAbsSum(entries)
+            expected *= shape[a]
+    return pairwiseAbsSum(buf[:expected])
+
+@njit(cache=True)
+def _contiguousCopy(shape, dim):
+    """Whether TransformChebInPlaceND copies this tensor to C order before transforming dim."""
+    size = 1
+    for a in range(shape.size):
+        size *= shape[a]
+    return (shape.size <= CONTIGUOUS_COPY_MAX_NDIM and size >= CONTIGUOUS_COPY_MIN_SIZE
+            and shape[dim] >= CONTIGUOUS_COPY_MIN_DIM)
+
+@njit(cache=True)
+def _transformDimStrided(buf, shape, strides, layout, dim, alpha, beta):
+    """TransformChebInPlaceND(M, dim, alpha, beta, exact=False) for the tensor (buf, shape, strides).
+
+    Applies TransformChebInPlace1D's operations to each line of entries along dim, without
+    transposing. layout is the strides numba would see for the tensor; it decides, as it does in
+    TransformChebInPlaceND, whether the result is laid out in C or Fortran order.
+
+    Returns
+    -------
+    out : numpy array
+        The buffer of the result. It keeps every row TransformChebInPlace1D allocates, so after the
+        result is cut to its new length there can be gaps, just as in TransformChebInPlaceND.
+    newShape : numpy array
+        The shape of the result.
+    newStrides : numpy array
+        The element strides of the result in out. They are also the result's layout.
+    """
+    nd = shape.size
+    n = shape[dim]
+    #The view TransformChebInPlaceND hands TransformChebInPlace1D: dim first, then the others in order.
+    order = np.empty(nd, np.int64)
+    order[0] = dim
+    k = 1
+    for a in range(nd):
+        if a != dim:
+            order[k] = a
+            k += 1
+    viewShape = np.empty(nd, np.int64)
+    viewLayout = np.empty(nd, np.int64)
+    for k in range(nd):
+        viewShape[k] = shape[order[k]]
+        viewLayout[k] = layout[order[k]]
+    #numba's np.zeros_like keeps a Fortran-contiguous array Fortran ordered and makes anything else C
+    #ordered. A tensor copied with np.ascontiguousarray first is C-contiguous.
+    fortran = (not _contiguousCopy(shape, dim) and not _isContiguous(viewShape, viewLayout, False)
+               and _isContiguous(viewShape, viewLayout, True))
+    viewStrides = np.empty(nd, np.int64)
+    s = 1
+    for k in range(nd):
+        kk = k if fortran else nd - 1 - k
+        viewStrides[kk] = s
+        s *= viewShape[kk]
+    newStrides = np.empty(nd, np.int64)
+    for k in range(nd):
+        newStrides[order[k]] = viewStrides[k]
+
+    inOff = _offsets(shape, strides, order[1:])
+    outOff = _offsets(shape, newStrides, order[1:])
+    m = inOff.size
+    inStep = strides[dim]
+    outStep = newStrides[dim]
+    out = np.zeros(n * m)
+
+    #From here on this is TransformChebInPlace1D, with each row operation done line by line.
+    arr1 = np.zeros(n)
+    arr2 = np.zeros(n)
+    arr3 = np.zeros(n)
+    arr1[0] = 1.
+    for t in range(m):
+        out[outOff[t]] = buf[inOff[t]]
+    arr2[0] = beta
+    arr2[1] = alpha
+    for t in range(m):
+        c = buf[inOff[t] + inStep]
+        out[outOff[t]] += beta * c
+        out[outOff[t] + outStep] += alpha * c
+
+    maxRow = 2
+    for col in range(2, n):
+        colOff = col * inStep
+        arr3[0] = -arr1[0] + alpha*arr2[1] + 2*beta*arr2[0]
+        val = arr3[0]
+        for t in range(m):
+            out[outOff[t]] += buf[inOff[t] + colOff] * val
+        if maxRow > 2:
+            arr3[1] = -arr1[1] + alpha*(2*arr2[0] + arr2[2]) + 2*beta*arr2[1]
+            val = arr3[1]
+            for t in range(m):
+                out[outOff[t] + outStep] += buf[inOff[t] + colOff] * val
+        for i in range(2, maxRow - 1):
+            arr3[i] = -arr1[i] + alpha*(arr2[i-1] + arr2[i+1]) + 2*beta*arr2[i]
+            val = arr3[i]
+            for t in range(m):
+                out[outOff[t] + i*outStep] += buf[inOff[t] + colOff] * val
+        i = maxRow - 1
+        arr3[i] = -arr1[i] + (2 if i == 1 else 1)*alpha*(arr2[i-1]) + 2*beta*arr2[i]
+        val = arr3[i]
+        for t in range(m):
+            out[outOff[t] + i*outStep] += buf[inOff[t] + colOff] * val
+        finalVal = alpha*arr2[i]
+        if abs(finalVal) > 1e-16:
+            arr3[maxRow] = finalVal
+            for t in range(m):
+                out[outOff[t] + maxRow*outStep] += buf[inOff[t] + colOff] * finalVal
+            maxRow += 1
+        arr = arr1
+        arr1 = arr2
+        arr2 = arr3
+        arr3 = arr
+    newShape = shape.copy()
+    newShape[dim] = maxRow
+    return out, newShape, newStrides
+
+@njit(cache=True)
+def _stridesFromTuples(shapeT, stridesT):
+    """(shape, strides, layout) for an array with shape shapeT and byte strides stridesT whose
+    entries have been copied out in 'K' order: strides index that copy, layout is the array's own."""
+    nd = len(shapeT)
+    shape = np.empty(nd, np.int64)
+    layout = np.empty(nd, np.int64)
+    for a in range(nd):
+        shape[a] = shapeT[a]
+        layout[a] = stridesT[a] // 8
+    perm = _memoryOrder(shape, layout)
+    strides = np.empty(nd, np.int64)
+    s = 1
+    for k in range(nd - 1, -1, -1):
+        strides[perm[k]] = s
+        s *= shape[perm[k]]
+    return shape, strides, layout
+
+@njit(cache=True)
+def _transformChebFused(entries, shapeT, stridesT, alphas, betas, error):
+    """transformCheb(M, alphas, betas, error, exact=False) for the array with shape shapeT and byte
+    strides stridesT, whose entries in 'K' order are `entries`.
+
+    Returns (changed, out, shape, byte strides, error); changed is False when every dimension was
+    left alone, in which case transformCheb returns M itself.
+    """
+    buf = entries
+    shape, strides, layout = _stridesFromTuples(shapeT, stridesT)
+    machEps = 2.**-52
+    changed = False
+    for dim in range(shape.size):
+        error += shape[dim] * machEps * _stridedAbsSum(buf, shape, strides)
+        if (alphas[dim] == 1.0 and betas[dim] == 0.0) or shape[dim] == 1:
+            continue
+        buf, shape, strides = _transformDimStrided(buf, shape, strides, layout, dim, alphas[dim], betas[dim])
+        layout = strides
+        changed = True
+    return changed, buf, shape, strides * 8, error
+
+@njit(cache=True)
+def _subdivisionTransformsFused(entries, shapeT, stridesT, dims, alphas, betas, error):
+    """The transforms getSubdivisionIntervals does for one polynomial, with exact=False.
+
+    For each dimension dims[j] in turn, every current piece T is split in two: transformed with
+    (alphas[j], betas[j]) and with (-betas[j], alphas[j]) along that dimension, each piece's error
+    becoming E1 + E, with E1 the transformation error of T and E its error so far.
+
+    Returns
+    -------
+    big : numpy array
+        Every piece's buffer, one after the other.
+    meta : numpy array
+        One row per piece: its shape, its byte strides, its byte offset in big, and 1 if the piece is
+        the input array itself, never transformed.
+    errs : numpy array
+        The error of each piece.
+    """
+    shape0, strides0, layout0 = _stridesFromTuples(shapeT, stridesT)
+    nd = shape0.size
+    machEps = 2.**-52
+    bufs = [entries]
+    shapes = [shape0]
+    strides = [strides0]
+    layouts = [layout0]
+    errs = [error]
+    untouched = [True]
+    for j in range(dims.size):
+        dim = dims[j]
+        newBufs = [entries][:0]
+        newShapes = [shape0][:0]
+        newStrides = [shape0][:0]
+        newLayouts = [shape0][:0]
+        newErrs = [error][:0]
+        newUntouched = [True][:0]
+        for p in range(len(bufs)):
+            buf = bufs[p]
+            shape = shapes[p]
+            E1 = shape[dim] * machEps * _stridedAbsSum(buf, shape, strides[p])
+            for (alpha, beta) in ((alphas[j], betas[j]), (-betas[j], alphas[j])):
+                if (alpha == 1.0 and beta == 0.0) or shape[dim] == 1:
+                    newBufs.append(buf)
+                    newShapes.append(shape)
+                    newStrides.append(strides[p])
+                    newLayouts.append(layouts[p])
+                    newUntouched.append(untouched[p])
+                else:
+                    out, outShape, outStrides = _transformDimStrided(buf, shape, strides[p], layouts[p],
+                                                                     dim, alpha, beta)
+                    newBufs.append(out)
+                    newShapes.append(outShape)
+                    newStrides.append(outStrides)
+                    newLayouts.append(outStrides)
+                    newUntouched.append(False)
+                newErrs.append(E1 + errs[p])
+        bufs = newBufs
+        shapes = newShapes
+        strides = newStrides
+        layouts = newLayouts
+        errs = newErrs
+        untouched = newUntouched
+    numPieces = len(bufs)
+    total = 0
+    for p in range(numPieces):
+        total += bufs[p].size
+    big = np.empty(total)
+    meta = np.empty((numPieces, 2*nd + 2), np.int64)
+    errOut = np.empty(numPieces)
+    pos = 0
+    for p in range(numPieces):
+        buf = bufs[p]
+        big[pos:pos + buf.size] = buf
+        for a in range(nd):
+            meta[p, a] = shapes[p][a]
+            meta[p, nd + a] = strides[p][a] * 8
+        meta[p, 2*nd] = pos * 8
+        meta[p, 2*nd + 1] = 1 if untouched[p] else 0
+        errOut[p] = errs[p]
+        pos += buf.size
+    return big, meta, errOut
+
+def transformChebFast(M, alphas, betas, error):
+    """transformCheb with exact=False, in one numba call. Same result, bit for bit."""
+    changed, out, shape, strides, error = _transformChebFused(M.ravel('K'), M.shape, M.strides,
+                                                              alphas, betas, error)
+    if not changed:
+        return M, error
+    return np.ndarray(shape.tolist(), dtype=np.float64, buffer=out, strides=strides.tolist()), error
+
+def subdivisionTransformsFast(M, dims, alphas, betas, error):
+    """The pieces and errors getSubdivisionIntervals gets from transforming M, with exact=False, in
+    one numba call. Same result, bit for bit, in the same order."""
+    big, meta, errs = _subdivisionTransformsFused(M.ravel('K'), M.shape, M.strides, dims, alphas,
+                                                  betas, error)
+    nd = M.ndim
+    pieces = [M if m[2*nd + 1] else
+              np.ndarray(m[:nd], dtype=np.float64, buffer=big, offset=m[2*nd], strides=m[nd:2*nd])
+              for m in meta.tolist()]
+    return pieces, errs.tolist()
+
 @njit(float64[:,:](float64[:,:], float64[:,:]), cache=True)
 def applySubInterval(interval, subInterval):
     """Shrinks interval down to subInterval in place and returns the transformation that did it.
@@ -1237,6 +1650,9 @@ def transformCheb(M, alphas, betas, error, exact):
     error : float
         An upper bound on the error of the transformation
     """
+    if not exact and M.dtype == np.float64:
+        return transformChebFast(M, np.asarray(alphas, dtype=np.float64),
+                                 np.asarray(betas, dtype=np.float64), error)
     #This just does the matrix multiplication on each dimension. Except it's by a tensor.
     for dim,n,alpha,beta in zip(range(M.ndim),M.shape,alphas,betas):
         error += getTransformationError(M, dim)
@@ -1383,6 +1799,19 @@ def getInverseOrder(order):
         numerical order
     """
 
+    key = tuple(int(i) for i in order)
+    invOrder = _inverseOrders.get(key)
+    if invOrder is None:
+        invOrder = _computeInverseOrder(np.array(key))
+        _inverseOrders[key] = invOrder
+    return invOrder
+
+#Results of getInverseOrder, keyed by the order. They depend only on the order, which repeats
+#constantly, and computing one costs about as much as transforming a small polynomial.
+_inverseOrders = {}
+
+def _computeInverseOrder(order):
+    """Computes getInverseOrder(order)."""
     t = np.zeros_like(order)
     t[np.argsort(order)] = np.arange(len(t))
     order = t
@@ -1477,8 +1906,16 @@ def getSubdivisionIntervals(Ms, errors, trackedInterval, exact, level):
     for M,error,order in zip(Ms, errors, subdivisionDims):
         idx += 1
         #Iterate through the dimensions, highest degree first.
-        currMs, currErrs = [M],[error]
-        for thisDim in order:
+        if not exact and M.dtype == np.float64:
+            #Same transforms as the loop below, all in one numba call.
+            midpoints = np.array([trackedInterval.nextTransformPoints[thisDim] for thisDim in order])
+            currMs, currErrs = subdivisionTransformsFast(M, np.asarray(order, dtype=np.int64),
+                                                         (midpoints+1)/2, (midpoints-1)/2, error)
+            loopDims = ()
+        else:
+            currMs, currErrs = [M],[error]
+            loopDims = order
+        for thisDim in loopDims:
             newMidpoint = trackedInterval.nextTransformPoints[thisDim]
             alpha, beta = (newMidpoint+1)/2, (newMidpoint-1)/2
             tempMs = []
